@@ -38,7 +38,7 @@ The simulation is constrained by six non-negotiable design pillars:
 | SYS-009 | Logistics & Readiness | Strategic | Planned | — | P1 | 004, 005 |
 | SYS-010 | Economy | Strategic | Backlog | — | P2 | 007, 009 |
 | SYS-011 | Combat Resolution | Tactical | Backlog | — | P3 | 009 |
-| SYS-012 | Character Behavior & Cognition | Foundational | Planned | SPEC-005 | P1 | 001, 002, 006 |
+| SYS-012 | Character Behavior & Cognition | Foundational | Active | SPEC-005 | P1 | 001, 002, 006 |
 
 ## Open design questions
 
@@ -83,6 +83,19 @@ flowchart LR
     SYS009 --> SYS010
     SYS009 --> SYS011[SYS-011 Combat]
 ```
+
+## Spec / discussion files
+
+| System | Spec | Discussions |
+|---|---|---|
+| SYS-001 Time & Simulation Clock | [`specs/sys-001-time-simulation-clock.md`](specs/sys-001-time-simulation-clock.md) | — |
+| SYS-002 Universal Character System | [`specs/sys-002-universal-character-system.md`](specs/sys-002-universal-character-system.md) | — |
+| SYS-004 Map & Navigation | (spec pending) | [`discussions/sys-004-map-and-navigation.md`](discussions/sys-004-map-and-navigation.md) |
+| SYS-011 Combat Resolution | (spec pending) | [`discussions/sys-011-combat-real-time-no-graphics.md`](discussions/sys-011-combat-real-time-no-graphics.md) |
+| SYS-012 Character Behavior & Cognition | [`specs/sys-012-character-behavior-cognition.md`](specs/sys-012-character-behavior-cognition.md) | — |
+| (unassigned) Jump Operations | — | [`discussions/jump-operations.md`](discussions/jump-operations.md) |
+
+Project conventions (code labels, in-universe calendar): [`conventions.md`](conventions.md).
 
 ## Sources of truth
 
