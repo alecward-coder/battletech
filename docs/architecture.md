@@ -90,7 +90,7 @@ flowchart LR
 |---|---|---|
 | SYS-001 Time & Simulation Clock | [`specs/sys-001-time-simulation-clock.md`](specs/sys-001-time-simulation-clock.md) | — |
 | SYS-002 Universal Character System | [`specs/sys-002-universal-character-system.md`](specs/sys-002-universal-character-system.md) | — |
-| SYS-004 Map & Navigation | (spec pending) | [`discussions/sys-004-map-and-navigation.md`](discussions/sys-004-map-and-navigation.md) |
+| SYS-004 Map & Navigation | (spec pending) | [`discussions/sys-004-map-and-navigation.md`](discussions/sys-004-map-and-navigation.md), [`discussions/sys-004-3d-representation.md`](discussions/sys-004-3d-representation.md) |
 | SYS-011 Combat Resolution | (spec pending) | [`discussions/sys-011-combat-real-time-no-graphics.md`](discussions/sys-011-combat-real-time-no-graphics.md) |
 | SYS-012 Character Behavior & Cognition | [`specs/sys-012-character-behavior-cognition.md`](specs/sys-012-character-behavior-cognition.md) | — |
 | (unassigned) Jump Operations | — | [`discussions/jump-operations.md`](discussions/jump-operations.md) |
