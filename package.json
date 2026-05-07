@@ -1,0 +1,17 @@
+{
+  "name": "battletech",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BattleTech NPC sim — Google Apps Script project + spreadsheet schema, mirrored to GitHub.",
+  "scripts": {
+    "pull": "clasp pull",
+    "push": "clasp push",
+    "deploy": "clasp deploy",
+    "open": "clasp open",
+    "open:sheet": "open https://docs.google.com/spreadsheets/d/1nr-9ln8iWfK_ajDYpi7csVOfvfJKy_5IUxUrgB7EfD4/edit",
+    "logs": "clasp logs"
+  },
+  "devDependencies": {
+    "@google/clasp": "^2.4.2"
+  }
+}
