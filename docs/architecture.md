@@ -30,7 +30,7 @@ The simulation is constrained by six non-negotiable design pillars:
 | SYS-001 | Time & Simulation Clock | Foundational | Locked | SPEC-001 | P0 | — |
 | SYS-002 | Universal Character System | Foundational | Locked | SPEC-002 | P0 | 001 |
 | SYS-003 | ComStar Meta-Faction | Foundational | Active | SPEC-003 | P0 | 001, 002 |
-| SYS-004 | Map & Navigation | Foundational | Active | SPEC-004 | P0 | 001 |
+| SYS-004 | Map & Navigation | Foundational | Active | SPEC-004 + SPEC-004A | P0 | 001 |
 | SYS-005 | Order & Messaging | Foundational | Active | (Pending) | P0 | 001, 003 |
 | SYS-006 | Information & Knowledge | Foundational | Active | SPEC-006 | P0 | 004, 005 |
 | SYS-007 | Authority & Governance | Strategic | Active | SPEC-007 | P1 | 002, 006 |
@@ -93,9 +93,13 @@ flowchart LR
 |---|---|---|
 | SYS-001 Time & Simulation Clock | [`specs/sys-001-time-simulation-clock.md`](specs/sys-001-time-simulation-clock.md) | — |
 | SYS-002 Universal Character System | [`specs/sys-002-universal-character-system.md`](specs/sys-002-universal-character-system.md) | — |
-| SYS-004 Map & Navigation | (spec pending) | [`discussions/sys-004-map-and-navigation.md`](discussions/sys-004-map-and-navigation.md), [`discussions/sys-004-3d-representation.md`](discussions/sys-004-3d-representation.md) |
+| SYS-003 ComStar Meta-Faction | [`specs/sys-003-comstar-superset-admin-interface.md`](specs/sys-003-comstar-superset-admin-interface.md) | — |
+| SYS-004 Map & Navigation | [`specs/sys-004-egocentric-relational-starmap.md`](specs/sys-004-egocentric-relational-starmap.md), [`specs/sys-004-map-core-integration.md`](specs/sys-004-map-core-integration.md) | [`discussions/sys-004-map-and-navigation.md`](discussions/sys-004-map-and-navigation.md), [`discussions/sys-004-3d-representation.md`](discussions/sys-004-3d-representation.md) |
 | SYS-006 Information & Knowledge | [`specs/sys-006-information-knowledge.md`](specs/sys-006-information-knowledge.md) | — |
 | SYS-007 Authority & Governance | [`specs/sys-007-authority-governance.md`](specs/sys-007-authority-governance.md) | — |
+| (no SYS yet) Audio worldbuilding | — | [`discussions/audio-worldbuilding.md`](discussions/audio-worldbuilding.md) |
+
+**Active work orders:** [`work-orders/sys-004-phase-0-starmap.md`](work-orders/sys-004-phase-0-starmap.md) — Phase 0 starmap + systems_points_v0 artifact.
 | SYS-011 Combat Resolution | (spec pending) | [`discussions/sys-011-combat-real-time-no-graphics.md`](discussions/sys-011-combat-real-time-no-graphics.md) |
 | SYS-012 Character Behavior & Cognition | [`specs/sys-012-character-behavior-cognition.md`](specs/sys-012-character-behavior-cognition.md) | — |
 | (unassigned) Jump Operations | — | [`discussions/jump-operations.md`](discussions/jump-operations.md) |
