@@ -33,7 +33,7 @@ The simulation is constrained by six non-negotiable design pillars:
 | SYS-004 | Map & Navigation | Foundational | Active | SPEC-004 | P0 | 001 |
 | SYS-005 | Order & Messaging | Foundational | Active | (Pending) | P0 | 001, 003 |
 | SYS-006 | Information & Knowledge | Foundational | Planned | (Pending) | P0 | 004, 005 |
-| SYS-007 | Authority & Governance | Strategic | Planned | (Pending) | P1 | 002, 006 |
+| SYS-007 | Authority & Governance | Strategic | Active | SPEC-007 | P1 | 002, 006 |
 | SYS-008 | Legitimacy & Reputation | Strategic | Planned | — | P1 | 003, 006 |
 | SYS-009 | Logistics & Readiness | Strategic | Planned | — | P1 | 004, 005 |
 | SYS-010 | Economy | Strategic | Backlog | — | P2 | 007, 009 |
@@ -91,6 +91,7 @@ flowchart LR
 | SYS-001 Time & Simulation Clock | [`specs/sys-001-time-simulation-clock.md`](specs/sys-001-time-simulation-clock.md) | — |
 | SYS-002 Universal Character System | [`specs/sys-002-universal-character-system.md`](specs/sys-002-universal-character-system.md) | — |
 | SYS-004 Map & Navigation | (spec pending) | [`discussions/sys-004-map-and-navigation.md`](discussions/sys-004-map-and-navigation.md), [`discussions/sys-004-3d-representation.md`](discussions/sys-004-3d-representation.md) |
+| SYS-007 Authority & Governance | [`specs/sys-007-authority-governance.md`](specs/sys-007-authority-governance.md) | — |
 | SYS-011 Combat Resolution | (spec pending) | [`discussions/sys-011-combat-real-time-no-graphics.md`](discussions/sys-011-combat-real-time-no-graphics.md) |
 | SYS-012 Character Behavior & Cognition | [`specs/sys-012-character-behavior-cognition.md`](specs/sys-012-character-behavior-cognition.md) | — |
 | (unassigned) Jump Operations | — | [`discussions/jump-operations.md`](discussions/jump-operations.md) |
