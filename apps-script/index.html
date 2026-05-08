@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a12; color: #ccc; font-family: monospace; overflow: hidden; display: flex; flex-direction: column; height: 100vh; }
+    #container { display: flex; flex: 1; }
+    #canvasWrap { flex: 1; position: relative; }
+    #canvas { display: block; cursor: crosshair; }
+    #panel { width: 200px; background: #12121a; border-left: 1px solid #333; padding: 12px; }
+    #panel h2 { font-size: 11px; color: #666; margin-bottom: 8px; }
+    #systemName { color: #0fa; font-size: 16px; font-weight: bold; }
+    #systemInfo { font-size: 12px; color: #888; margin-top: 6px; line-height: 1.6; }
+    #controls { margin-top: 20px; padding-top: 12px; border-top: 1px solid #333; font-size: 11px; color: #555; line-height: 1.8; }
+    #header { background: #12121a; padding: 8px 12px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; }
+    #header h1 { font-size: 14px; color: #0fa; }
+    #header span { font-size: 11px; color: #555; }
+    #simClock { font-size: 12px; color: #8cf; letter-spacing: 0.05em; }
+    #simClockLabel { font-size: 10px; color: #445; margin-right: 6px; }
+    #systemCount { font-size: 10px; color: #556; margin-left: 12px; }
+    button { background: #222; border: 1px solid #444; color: #aaa; padding: 4px 10px; cursor: pointer; font-family: monospace; }
+    button:hover { background: #333; }
+
+    /* Music button */
+    #musicBtn {
+      position: fixed; bottom: 16px; right: 16px;
+      background: rgba(10,10,18,0.85); color: #556;
+      border: 1px solid #333; border-radius: 4px;
+      padding: 5px 10px; cursor: pointer;
+      font-family: monospace; font-size: 12px;
+      z-index: 9999; transition: color 0.2s, border-color 0.2s;
+    }
+    #musicBtn:hover { color: #0fa; border-color: #0fa; }
+    #musicBtn.playing { color: #8cf; border-color: #8cf; }
+
+    /* Halden panel */
+    #halden-panel {
+      position: fixed; bottom: 52px; right: 16px;
+      width: 340px;
+      background: rgba(10,10,18,0.92);
+      border: 1px solid rgba(0,255,255,0.15);
+      border-radius: 4px;
+      padding: 12px;
+      font-family: monospace; font-size: 13px; color: #ccc;
+      z-index: 9998;
+    }
+    #halden-label {
+      color: #0ff; font-size: 11px; margin-bottom: 8px; opacity: 0.7;
+    }
+    #halden-response {
+      min-height: 60px; max-height: 180px;
+      overflow-y: auto;
+      margin-bottom: 8px;
+      color: #eee; line-height: 1.6; font-size: 12px;
+    }
+    #halden-input {
+      width: 100%; background: #111;
+      border: 1px solid rgba(0,255,255,0.2);
+      border-radius: 2px;
+      color: #fff; padding: 6px;
+      font-family: monospace; font-size: 12px;
+      box-sizing: border-box;
+      outline: none;
+    }
+    #halden-input:focus { border-color: rgba(0,255,255,0.5); }
+    #halden-input::placeholder { color: #444; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>Phase 0 Starmap</h1>
+    <div>
+      <span id="simClockLabel">TC/TST</span>
+      <span id="simClock">--</span>
+      <span id="systemCount"></span>
+    </div>
+    <div>
+      <button onclick="centerTerra()">Terra</button>
+      <span id="zoom">100%</span>
+    </div>
+  </div>
+  <div id="container">
+    <div id="canvasWrap">
+      <canvas id="canvas"></canvas>
+    </div>
+    <div id="panel">
+      <h2>SELECTED SYSTEM</h2>
+      <div id="systemName">-</div>
+      <div id="systemInfo"></div>
+      <div id="controls">
+        Pan: drag<br>
+        Zoom: wheel<br>
+        Select: click<br>
+        Center: dbl-click
+      </div>
+    </div>
+  </div>
+
+  <!-- Background Music -->
+  <audio id="bgMusic" loop>
+    <source src="https://raw.githubusercontent.com/alecward-coder/battletech/main/Reactor%20Core%20Continuum.mp3" type="audio/mpeg">
+  </audio>
+  <button id="musicBtn" onclick="toggleMusic()">♪ music off</button>
+
+  <!-- SYS-012 Halden panel -->
+  <div id="halden-panel">
+    <div id="halden-label">// COMSTAR CHANNEL — PRECENTOR HALDEN</div>
+    <div id="halden-response"></div>
+    <input id="halden-input" type="text" placeholder="Speak to Halden..."
+      onkeydown="if(event.key==='Enter') talkToHalden()">
+  </div>
+
+  <script>
+    // ─────────────────────────────────────────────
+    // MUSIC
+    // ─────────────────────────────────────────────
+    var bgMusic = document.getElementById('bgMusic');
+    var musicBtn = document.getElementById('musicBtn');
+    var musicPlaying = false;
+
+    function toggleMusic() {
+      if (musicPlaying) {
+        bgMusic.pause();
+        musicBtn.textContent = '♪ music off';
+        musicBtn.classList.remove('playing');
+        musicPlaying = false;
+      } else {
+        bgMusic.play();
+        musicBtn.textContent = '♪ music on';
+        musicBtn.classList.add('playing');
+        musicPlaying = true;
+      }
+    }
+
+    // ─────────────────────────────────────────────
+    // TIME CONSTANTS
+    // ─────────────────────────────────────────────
+    var TICKS_PER_SECOND = 1;
+    var TICKS_PER_MINUTE = 60;
+    var TICKS_PER_HOUR   = 3600;
+    var TICKS_PER_DAY    = 86400;
+
+    var FTL_EPOCH_MS = Date.UTC(2108, 11, 1, 0, 0, 0);
+    var DEFAULT_START_TICK = Math.floor((Date.UTC(2082, 0, 1) - FTL_EPOCH_MS) / 1000);
+
+    // ─────────────────────────────────────────────
+    // CLOCK STATE
+    // ─────────────────────────────────────────────
+    var simTick = DEFAULT_START_TICK;
+    var simYear = 2082;
+    var sessionRealStart = Date.now();
+    var sessionTickStart = DEFAULT_START_TICK;
+    var clockInterval = null;
+
+    // ─────────────────────────────────────────────
+    // TC/TST FORMATTER
+    // ─────────────────────────────────────────────
+    var TC_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun',
+                     'Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    function ticksToTC(ticks) {
+      var ms = FTL_EPOCH_MS + (ticks * 1000);
+      var d  = new Date(ms);
+      var day  = d.getUTCDate();
+      var mon  = TC_MONTHS[d.getUTCMonth()];
+      var year = d.getUTCFullYear();
+      var hh   = pad(d.getUTCHours());
+      var mm   = pad(d.getUTCMinutes());
+      var ss   = pad(d.getUTCSeconds());
+      return day + ' ' + mon + ' ' + year + ' / ' + hh + ':' + mm + ':' + ss + ' TST';
+    }
+
+    function ticksToYear(ticks) {
+      var ms = FTL_EPOCH_MS + (ticks * 1000);
+      var d  = new Date(ms);
+      return d.getUTCFullYear();
+    }
+
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+    // ─────────────────────────────────────────────
+    // REVEAL YEAR PARSING
+    // ─────────────────────────────────────────────
+    function parseRevealYear(revealYear) {
+      if (!revealYear || revealYear === '') return 9999;
+      var match = String(revealYear).match(/^(\d+)/);
+      return match ? parseInt(match[1], 10) : 9999;
+    }
+
+    function isSystemRevealed(system, currentYear) {
+      var revealNum = parseRevealYear(system.revealYear);
+      return currentYear >= revealNum;
+    }
+
+    // ─────────────────────────────────────────────
+    // CLOCK LOOP
+    // ─────────────────────────────────────────────
+    function tickClock() {
+      var elapsedSeconds = Math.floor((Date.now() - sessionRealStart) / 1000);
+      simTick = sessionTickStart + elapsedSeconds;
+      simYear = ticksToYear(simTick);
+      document.getElementById('simClock').textContent = ticksToTC(simTick);
+      updateSystemCount();
+    }
+
+    function startClock() {
+      tickClock();
+      clockInterval = setInterval(tickClock, 1000);
+    }
+
+    // ─────────────────────────────────────────────
+    // SAVE / LOAD
+    // ─────────────────────────────────────────────
+    function initClock() {
+      google.script.run
+        .withSuccessHandler(function(savedTick) {
+          sessionTickStart = (savedTick !== null) ? savedTick : DEFAULT_START_TICK;
+          sessionRealStart = Date.now();
+          startClock();
+        })
+        .withFailureHandler(function() {
+          sessionTickStart = DEFAULT_START_TICK;
+          sessionRealStart = Date.now();
+          startClock();
+        })
+        .getSimTime();
+    }
+
+    function saveTime() {
+      google.script.run.saveSimTime(simTick);
+    }
+
+    setInterval(saveTime, 60000);
+    window.addEventListener('beforeunload', saveTime);
+
+    // ─────────────────────────────────────────────
+    // STARMAP
+    // ─────────────────────────────────────────────
+    var systems = [];
+    var view = { x: 0, y: 0, scale: 0.5 };
+    var selected = null;
+    var hovered = null;
+    var drag = null;
+    var canvas, ctx, width, height;
+
+    google.script.run.withSuccessHandler(function(data) {
+      systems = data;
+      draw();
+      updateSystemCount();
+    }).getSystems();
+
+    function updateSystemCount() {
+      var visible = systems.filter(function(s) { return isSystemRevealed(s, simYear); }).length;
+      document.getElementById('systemCount').textContent = visible + ' / ' + systems.length + ' systems';
+    }
+
+    window.onload = function() {
+      canvas = document.getElementById('canvas');
+      ctx = canvas.getContext('2d');
+      resize();
+      window.addEventListener('resize', resize);
+      canvas.addEventListener('mousedown', onMouseDown);
+      canvas.addEventListener('mousemove', onMouseMove);
+      canvas.addEventListener('mouseup', onMouseUp);
+      canvas.addEventListener('mouseleave', onMouseUp);
+      canvas.addEventListener('click', onClick);
+      canvas.addEventListener('dblclick', onDblClick);
+      canvas.addEventListener('wheel', onWheel);
+      initClock();
+    };
+
+    function resize() {
+      var wrap = document.getElementById('canvasWrap');
+      var rect = wrap.getBoundingClientRect();
+      width = rect.width;
+      height = rect.height;
+      canvas.width = width;
+      canvas.height = height;
+      draw();
+    }
+
+    function worldToScreen(wx, wy) {
+      return {
+        x: width/2 + (wx + view.x) * view.scale,
+        y: height/2 - (wy + view.y) * view.scale
+      };
+    }
+
+    function screenToWorld(sx, sy) {
+      return {
+        x: (sx - width/2) / view.scale - view.x,
+        y: -((sy - height/2) / view.scale) - view.y
+      };
+    }
+
+    function findSystemAt(sx, sy) {
+      var w = screenToWorld(sx, sy);
+      var r = 10 / view.scale;
+      for (var i = 0; i < systems.length; i++) {
+        var s = systems[i];
+        if (!isSystemRevealed(s, simYear)) continue;
+        var dx = s.x - w.x, dy = s.y - w.y;
+        if (Math.sqrt(dx*dx + dy*dy) < r) return s;
+      }
+      return null;
+    }
+
+    function draw() {
+      if (!ctx) return;
+      ctx.fillStyle = '#0a0a12';
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = '#1a1a2e';
+      ctx.lineWidth = 1;
+      var step = 100;
+      var tl = screenToWorld(0, 0);
+      var br = screenToWorld(width, height);
+      for (var x = Math.floor(tl.x/step)*step; x <= Math.ceil(br.x/step)*step; x += step) {
+        var p = worldToScreen(x, 0);
+        ctx.beginPath(); ctx.moveTo(p.x, 0); ctx.lineTo(p.x, height); ctx.stroke();
+      }
+      for (var y = Math.floor(br.y/step)*step; y <= Math.ceil(tl.y/step)*step; y += step) {
+        var p = worldToScreen(0, y);
+        ctx.beginPath(); ctx.moveTo(0, p.y); ctx.lineTo(width, p.y); ctx.stroke();
+      }
+
+      var terra = worldToScreen(0, 0);
+      ctx.strokeStyle = '#333';
+      ctx.beginPath();
+      ctx.moveTo(terra.x - 15, terra.y); ctx.lineTo(terra.x + 15, terra.y);
+      ctx.moveTo(terra.x, terra.y - 15); ctx.lineTo(terra.x, terra.y + 15);
+      ctx.stroke();
+
+      var nr = Math.max(2, Math.min(4, view.scale * 8));
+      for (var i = 0; i < systems.length; i++) {
+        var s = systems[i];
+        if (!isSystemRevealed(s, simYear)) continue;
+
+        var p = worldToScreen(s.x, s.y);
+        if (p.x < -10 || p.x > width+10 || p.y < -10 || p.y > height+10) continue;
+
+        var isSel   = selected && selected.id === s.id;
+        var isHov   = hovered  && hovered.id  === s.id;
+        var isTerra = s.id === 2371;
+
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, isSel ? nr*1.5 : nr, 0, Math.PI*2);
+        ctx.fillStyle = isTerra ? '#fc0' : isSel ? '#0fa' : isHov ? '#8cf' : '#556';
+        ctx.fill();
+
+        if (isSel) {
+          ctx.strokeStyle = '#0fa';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, nr*2.5, 0, Math.PI*2);
+          ctx.stroke();
+        }
+
+        if (isSel || isHov) {
+          ctx.fillStyle = isSel ? '#0fa' : '#aaa';
+          ctx.font = '11px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(s.name, p.x, p.y - nr - 5);
+        }
+      }
+
+      document.getElementById('zoom').textContent = Math.round(view.scale * 100) + '%';
+    }
+
+    function updatePanel() {
+      if (selected) {
+        document.getElementById('systemName').textContent = selected.name;
+        var dist = Math.sqrt(selected.x*selected.x + selected.y*selected.y).toFixed(1);
+        document.getElementById('systemInfo').innerHTML =
+          'ID: '          + selected.id         + '<br>' +
+          'X: '           + selected.x          + ' LY<br>' +
+          'Y: '           + selected.y          + ' LY<br>' +
+          'From Terra: '  + dist                + ' LY<br>' +
+          'Revealed: '    + selected.revealYear;
+      } else {
+        document.getElementById('systemName').textContent = '-';
+        document.getElementById('systemInfo').innerHTML = '';
+      }
+    }
+
+    function getMousePos(e) {
+      var rect = canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    function onMouseDown(e) {
+      var pos = getMousePos(e);
+      drag = { x: pos.x, y: pos.y, vx: view.x, vy: view.y };
+    }
+
+    function onMouseMove(e) {
+      var pos = getMousePos(e);
+      if (drag) {
+        var dx = (pos.x - drag.x) / view.scale;
+        var dy = (pos.y - drag.y) / view.scale;
+        view.x = drag.vx + dx;
+        view.y = drag.vy - dy;
+        draw();
+      } else {
+        hovered = findSystemAt(pos.x, pos.y);
+        draw();
+      }
+    }
+
+    function onMouseUp() { drag = null; }
+
+    function onClick(e) {
+      if (drag) return;
+      var pos = getMousePos(e);
+      selected = findSystemAt(pos.x, pos.y);
+      updatePanel();
+      draw();
+    }
+
+    function onDblClick(e) {
+      var pos = getMousePos(e);
+      var s = findSystemAt(pos.x, pos.y);
+      if (s) {
+        view.x = -s.x;
+        view.y = -s.y;
+        selected = s;
+        updatePanel();
+        draw();
+      }
+    }
+
+    function onWheel(e) {
+      e.preventDefault();
+      view.scale *= e.deltaY > 0 ? 0.9 : 1.1;
+      view.scale = Math.max(0.05, Math.min(5, view.scale));
+      draw();
+    }
+
+    function centerTerra() {
+      view.x = 0;
+      view.y = 0;
+      selected = systems.find(function(s) { return s.id === 2371; });
+      updatePanel();
+      draw();
+    }
+
+    // ─────────────────────────────────────────────
+    // SYS-012 HALDEN
+    // ─────────────────────────────────────────────
+    function talkToHalden() {
+      var input = document.getElementById('halden-input');
+      var responseDiv = document.getElementById('halden-response');
+      var text = input.value.trim();
+      if (!text) return;
+      responseDiv.textContent = '...';
+      input.value = '';
+      google.script.run
+        .withSuccessHandler(function(response) {
+          responseDiv.textContent = response;
+        })
+        .withFailureHandler(function(err) {
+          responseDiv.textContent = 'ERROR: ' + err.message;
+        })
+        .talkToCharacter('char_001', 'player', text);
+    }
+  </script>
+</body>
+</html>
