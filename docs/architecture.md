@@ -39,6 +39,7 @@ The simulation is constrained by six non-negotiable design pillars:
 | SYS-010 | Economy | Strategic | Backlog | — | P2 | 007, 009 |
 | SYS-011 | Combat Resolution | Tactical | Backlog | — | P3 | 009 |
 | SYS-012 | Character Behavior & Cognition | Foundational | Active | SPEC-005 | P1 | 001, 002, 006 |
+| SYS-013 | Movement & Jump | Foundational | Active | (in code) | P0 | 001, 004 |
 
 > **Spec-numbering note:** SPEC-001..004 align 1:1 with their SYS numbers. SPEC-005 in the project tracker is **for SYS-012** (Character Behavior, Memory & Goals Layer) — *not* SYS-005. The SYS-005 spec is filed under its file path (`specs/sys-005-order-transmission.md`) without a conflicting SPEC-XXX label. SPEC-007A and SPEC-003B are companion specs.
 
@@ -111,6 +112,7 @@ flowchart LR
 | SYS-008 Legitimacy & Reputation | [`specs/sys-008-role-and-legitimacy.md`](specs/sys-008-role-and-legitimacy.md) | — |
 | SYS-011 Combat Resolution | (spec pending) | [`discussions/sys-011-combat-real-time-no-graphics.md`](discussions/sys-011-combat-real-time-no-graphics.md) |
 | SYS-012 Character Behavior & Cognition | [`specs/sys-012-character-behavior-cognition.md`](specs/sys-012-character-behavior-cognition.md) (= SPEC-005 in tracker) | — |
+| SYS-013 Movement & Jump | (Tier 1 implementation in `apps-script/Code.gs` SYS-013 section; spec pending) | [`discussions/jump-operations.md`](discussions/jump-operations.md) |
 | (Play mode) Pirate / Mercenary | [`specs/play-pirate-mercenary.md`](specs/play-pirate-mercenary.md) | — |
 | (Unassigned) Jump Operations | — | [`discussions/jump-operations.md`](discussions/jump-operations.md) |
 | (Unassigned) Audio worldbuilding | — | [`discussions/audio-worldbuilding.md`](discussions/audio-worldbuilding.md) |

@@ -7,10 +7,17 @@
     #container { display: flex; flex: 1; }
     #canvasWrap { flex: 1; position: relative; }
     #canvas { display: block; cursor: crosshair; }
-    #panel { width: 200px; background: #12121a; border-left: 1px solid #333; padding: 12px; }
+    #panel { width: 200px; background: #12121a; border-left: 1px solid #333; padding: 12px; overflow-y: auto; }
     #panel h2 { font-size: 11px; color: #666; margin-bottom: 8px; }
+    #shipCurrent { color: #f0a; font-size: 14px; font-weight: bold; }
+    #shipDrive { font-size: 11px; color: #888; margin-top: 4px; line-height: 1.6; }
     #systemName { color: #0fa; font-size: 16px; font-weight: bold; }
     #systemInfo { font-size: 12px; color: #888; margin-top: 6px; line-height: 1.6; }
+    #systemActions { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+    #systemActions button { font-size: 11px; padding: 4px 8px; }
+    #systemActions button:disabled { opacity: 0.35; cursor: not-allowed; }
+    #systemActions .btn-jump { color: #0fa; border-color: #0fa; }
+    #systemActions .btn-jump:hover:enabled { background: #0fa; color: #000; }
     #controls { margin-top: 20px; padding-top: 12px; border-top: 1px solid #333; font-size: 11px; color: #555; line-height: 1.8; }
     #header { background: #12121a; padding: 8px 12px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; }
     #header h1 { font-size: 14px; color: #0fa; }
@@ -84,9 +91,15 @@
       <canvas id="canvas"></canvas>
     </div>
     <div id="panel">
-      <h2>SELECTED SYSTEM</h2>
+      <h2>SHIP STATUS</h2>
+      <div id="shipCurrent">-</div>
+      <div id="shipDrive">-</div>
+
+      <h2 style="margin-top: 16px">SELECTED SYSTEM</h2>
       <div id="systemName">-</div>
       <div id="systemInfo"></div>
+      <div id="systemActions"></div>
+
       <div id="controls">
         Pan: drag<br>
         Zoom: wheel<br>
@@ -201,6 +214,11 @@
       simYear = ticksToYear(simTick);
       document.getElementById('simClock').textContent = ticksToTC(simTick);
       updateSystemCount();
+      // [SYS-013] Keep ship-status drive timer + selected-system jump button live.
+      if (ship) {
+        updateShipStatus();
+        if (selected) updatePanel();
+      }
     }
 
     function startClock() {
@@ -234,6 +252,117 @@
     window.addEventListener('beforeunload', saveTime);
 
     // ─────────────────────────────────────────────
+    // SYS-013 MOVEMENT — constants & ship state
+    // ─────────────────────────────────────────────
+    var JUMP_RANGE_LY  = 30;
+    var RECHARGE_TICKS = 7 * TICKS_PER_DAY;   // 604800
+    var ship = null;                          // { systemId, lastJumpTick, jumpRangeLy, rechargeTicks }
+
+    function loadShip() {
+      google.script.run
+        .withSuccessHandler(function(s) {
+          ship = s;
+          updateShipStatus();
+          updatePanel();
+          draw();
+        })
+        .withFailureHandler(function(err) {
+          document.getElementById('shipCurrent').textContent = 'ERROR';
+          document.getElementById('shipDrive').textContent   = err.message || 'Could not load ship';
+        })
+        .getPlayerShip();
+    }
+
+    function getCurrentSystem() {
+      if (!ship || !systems.length) return null;
+      for (var i = 0; i < systems.length; i++) {
+        if (Number(systems[i].id) === Number(ship.systemId)) return systems[i];
+      }
+      return null;
+    }
+
+    function distanceLy(a, b) {
+      var dx = a.x - b.x, dy = a.y - b.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function rechargeStatus() {
+      if (!ship) return { ready: false, ticksRemaining: 0 };
+      var ticksRemaining = (Number(ship.lastJumpTick) + RECHARGE_TICKS) - simTick;
+      return { ready: ticksRemaining <= 0, ticksRemaining: Math.max(0, ticksRemaining) };
+    }
+
+    function formatTicks(ticks) {
+      var s = Math.floor(ticks);
+      var d = Math.floor(s / TICKS_PER_DAY);
+      s -= d * TICKS_PER_DAY;
+      var h = Math.floor(s / TICKS_PER_HOUR);
+      s -= h * TICKS_PER_HOUR;
+      var m = Math.floor(s / TICKS_PER_MINUTE);
+      if (d > 0) return d + 'd ' + h + 'h';
+      if (h > 0) return h + 'h ' + m + 'm';
+      return m + 'm';
+    }
+
+    function updateShipStatus() {
+      if (!ship) return;
+      var current = getCurrentSystem();
+      document.getElementById('shipCurrent').textContent =
+        'At: ' + (current ? current.name : '#' + ship.systemId);
+
+      var status = rechargeStatus();
+      var driveEl = document.getElementById('shipDrive');
+      if (status.ready) {
+        driveEl.textContent = 'K-F drive: ready';
+        driveEl.style.color = '#0fa';
+      } else {
+        driveEl.textContent = 'K-F drive: recharging — ' + formatTicks(status.ticksRemaining);
+        driveEl.style.color = '#888';
+      }
+    }
+
+    function jumpToSelected() {
+      if (!selected || !ship) return;
+      var btn = document.getElementById('btn-jump');
+      if (btn) { btn.disabled = true; btn.textContent = 'Jumping...'; }
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.ok) {
+            ship = result.ship;
+            updateShipStatus();
+            updatePanel();
+            draw();
+          } else {
+            var msg = 'Jump failed: ' + result.reason;
+            if (result.reason === 'recharging') {
+              msg += ' (' + formatTicks(result.ticksRemaining) + ' remaining)';
+            } else if (result.reason === 'out_of_range') {
+              msg += ' (' + result.distance.toFixed(1) + ' / ' + result.range + ' LY)';
+            }
+            alert(msg);
+            updatePanel();
+          }
+        })
+        .withFailureHandler(function(err) {
+          alert('Jump error: ' + err.message);
+          updatePanel();
+        })
+        .executeJump(selected.id, simTick);
+    }
+
+    function setStartHere() {
+      if (!selected) return;
+      google.script.run
+        .withSuccessHandler(function(s) {
+          ship = s;
+          updateShipStatus();
+          updatePanel();
+          draw();
+        })
+        .setPlayerLocation(selected.id);
+    }
+
+    // ─────────────────────────────────────────────
     // STARMAP
     // ─────────────────────────────────────────────
     var systems = [];
@@ -247,6 +376,7 @@
       systems = data;
       draw();
       updateSystemCount();
+      loadShip();
     }).getSystems();
 
     function updateSystemCount() {
@@ -331,6 +461,17 @@
       ctx.moveTo(terra.x, terra.y - 15); ctx.lineTo(terra.x, terra.y + 15);
       ctx.stroke();
 
+      // [SYS-013] Jump-range ring around current ship location
+      var currentSystem = getCurrentSystem();
+      if (currentSystem) {
+        var c = worldToScreen(currentSystem.x, currentSystem.y);
+        ctx.strokeStyle = 'rgba(255, 0, 170, 0.25)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, JUMP_RANGE_LY * view.scale, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
       var nr = Math.max(2, Math.min(4, view.scale * 8));
       for (var i = 0; i < systems.length; i++) {
         var s = systems[i];
@@ -339,14 +480,24 @@
         var p = worldToScreen(s.x, s.y);
         if (p.x < -10 || p.x > width+10 || p.y < -10 || p.y > height+10) continue;
 
-        var isSel   = selected && selected.id === s.id;
-        var isHov   = hovered  && hovered.id  === s.id;
-        var isTerra = s.id === 2371;
+        var isSel     = selected && selected.id === s.id;
+        var isHov     = hovered  && hovered.id  === s.id;
+        var isTerra   = s.id === 2371;
+        var isCurrent = ship && Number(s.id) === Number(ship.systemId);
 
         ctx.beginPath();
         ctx.arc(p.x, p.y, isSel ? nr*1.5 : nr, 0, Math.PI*2);
         ctx.fillStyle = isTerra ? '#fc0' : isSel ? '#0fa' : isHov ? '#8cf' : '#556';
         ctx.fill();
+
+        // [SYS-013] Current-location magenta ring (layered over base color)
+        if (isCurrent) {
+          ctx.strokeStyle = '#f0a';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, nr * 2.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
 
         if (isSel) {
           ctx.strokeStyle = '#0fa';
@@ -356,8 +507,8 @@
           ctx.stroke();
         }
 
-        if (isSel || isHov) {
-          ctx.fillStyle = isSel ? '#0fa' : '#aaa';
+        if (isSel || isHov || isCurrent) {
+          ctx.fillStyle = isSel ? '#0fa' : isCurrent ? '#f0a' : '#aaa';
           ctx.font = '11px monospace';
           ctx.textAlign = 'center';
           ctx.fillText(s.name, p.x, p.y - nr - 5);
@@ -368,19 +519,63 @@
     }
 
     function updatePanel() {
-      if (selected) {
-        document.getElementById('systemName').textContent = selected.name;
-        var dist = Math.sqrt(selected.x*selected.x + selected.y*selected.y).toFixed(1);
-        document.getElementById('systemInfo').innerHTML =
-          'ID: '          + selected.id         + '<br>' +
-          'X: '           + selected.x          + ' LY<br>' +
-          'Y: '           + selected.y          + ' LY<br>' +
-          'From Terra: '  + dist                + ' LY<br>' +
-          'Revealed: '    + selected.revealYear;
-      } else {
+      var actionsEl = document.getElementById('systemActions');
+      if (!selected) {
         document.getElementById('systemName').textContent = '-';
         document.getElementById('systemInfo').innerHTML = '';
+        actionsEl.innerHTML = '';
+        return;
       }
+
+      document.getElementById('systemName').textContent = selected.name;
+      var distFromTerra = Math.sqrt(selected.x*selected.x + selected.y*selected.y).toFixed(1);
+
+      // [SYS-013] Distance from current ship location
+      var current = getCurrentSystem();
+      var fromShipHtml = '';
+      if (current && Number(current.id) !== Number(selected.id)) {
+        var d = distanceLy(current, selected).toFixed(1);
+        fromShipHtml = 'From Ship: '  + d  + ' LY<br>';
+      } else if (current && Number(current.id) === Number(selected.id)) {
+        fromShipHtml = '<span style="color:#f0a">You are here.</span><br>';
+      }
+
+      document.getElementById('systemInfo').innerHTML =
+        'ID: '          + selected.id         + '<br>' +
+        'X: '           + selected.x          + ' LY<br>' +
+        'Y: '           + selected.y          + ' LY<br>' +
+        'From Terra: '  + distFromTerra       + ' LY<br>' +
+        fromShipHtml +
+        'Revealed: '    + selected.revealYear;
+
+      // [SYS-013] Action buttons
+      actionsEl.innerHTML = '';
+      if (ship && current && Number(current.id) !== Number(selected.id)) {
+        var distance = distanceLy(current, selected);
+        var status   = rechargeStatus();
+        var inRange  = distance <= JUMP_RANGE_LY;
+
+        var jumpBtn = document.createElement('button');
+        jumpBtn.id = 'btn-jump';
+        jumpBtn.className = 'btn-jump';
+        jumpBtn.onclick = jumpToSelected;
+        if (!inRange) {
+          jumpBtn.textContent = 'Out of range (' + distance.toFixed(1) + ' LY)';
+          jumpBtn.disabled = true;
+        } else if (!status.ready) {
+          jumpBtn.textContent = 'Recharging — ' + formatTicks(status.ticksRemaining);
+          jumpBtn.disabled = true;
+        } else {
+          jumpBtn.textContent = 'Jump here (' + distance.toFixed(1) + ' LY)';
+        }
+        actionsEl.appendChild(jumpBtn);
+      }
+
+      // Always offer the dev "set as starting position" option.
+      var setBtn = document.createElement('button');
+      setBtn.textContent = 'Set as starting position';
+      setBtn.onclick = setStartHere;
+      actionsEl.appendChild(setBtn);
     }
 
     function getMousePos(e) {

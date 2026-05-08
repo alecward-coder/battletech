@@ -56,7 +56,7 @@ function getCurrentTick() {
   var sheet = ss.getSheetByName('SaveData');
   var data = sheet.getDataRange().getValues();
   for (var i = 0; i < data.length; i++) {
-    if (data[i][0] === 'simTick') return Number(data[i][1]);
+    if (data[i][0] === 'SIM_TIME_TICKS') return Number(data[i][1]);
   }
   return 0;
 }
@@ -117,6 +117,143 @@ function saveSimTime(tick) {
     sheet.getRange(row, 2).setValue(tick);
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+// SYS-013: Movement & Jump — server-side
+// Player ship state, jump validation, K-F drive recharge tracking.
+//
+// SaveData keys used:
+//   PLAYER_SHIP_SYSTEM_ID   | <system_id of current location>
+//   PLAYER_SHIP_LAST_JUMP   | <SIM_TIME tick of last jump>
+//
+// Jump rules (Tier 1):
+//   - Distance check: Euclidean (system_x, system_y) <= JUMP_RANGE_LY
+//   - Recharge: lastJumpTick + RECHARGE_TICKS <= currentTick
+//   - Translation is instantaneous; recharge gates the next jump only.
+//   - No misjumps in this pass (see docs/discussions/jump-operations.md).
+// ─────────────────────────────────────────────────────────────
+
+var JUMP_RANGE_LY           = 30;
+var RECHARGE_TICKS          = 7 * 86400;   // 7 days at 1 tick/sec = 604800
+var DEFAULT_START_SYSTEM_ID = 2371;        // Terra
+
+/**
+ * Returns the player's ship state. Idempotently ensures both required
+ * SaveData rows exist; on first call seeds the player at Terra with
+ * the drive fully charged (lastJumpTick = -RECHARGE_TICKS).
+ */
+function getPlayerShip() {
+  var sheet   = getSaveDataSheet();
+  var sysRow  = findSaveRow(sheet, 'PLAYER_SHIP_SYSTEM_ID');
+  if (sysRow === -1) {
+    sysRow = sheet.getLastRow() + 1;
+    sheet.getRange(sysRow, 1).setValue('PLAYER_SHIP_SYSTEM_ID');
+    sheet.getRange(sysRow, 2).setValue(DEFAULT_START_SYSTEM_ID);
+  }
+  var jumpRow = findSaveRow(sheet, 'PLAYER_SHIP_LAST_JUMP');
+  if (jumpRow === -1) {
+    jumpRow = sheet.getLastRow() + 1;
+    // Seed so the drive is "just charged" at the current sim time, not
+    // 7 in-game days into the FTL-epoch's future (which would mark the
+    // drive as recharging for ~26 in-game years).
+    var seedTick = getSimTime();
+    if (seedTick === null) seedTick = 0;
+    sheet.getRange(jumpRow, 1).setValue('PLAYER_SHIP_LAST_JUMP');
+    sheet.getRange(jumpRow, 2).setValue(seedTick - RECHARGE_TICKS - 1);
+  }
+  return {
+    systemId:      Number(sheet.getRange(sysRow,  2).getValue()),
+    lastJumpTick:  Number(sheet.getRange(jumpRow, 2).getValue()),
+    jumpRangeLy:   JUMP_RANGE_LY,
+    rechargeTicks: RECHARGE_TICKS
+  };
+}
+
+/**
+ * Sets the player's current system without consuming charge or
+ * affecting the jump cooldown. Dev / testing helper.
+ */
+function setPlayerLocation(systemId) {
+  getPlayerShip();   // ensures both ship rows exist
+  var sheet  = getSaveDataSheet();
+  var sysRow = findSaveRow(sheet, 'PLAYER_SHIP_SYSTEM_ID');
+  sheet.getRange(sysRow, 2).setValue(Number(systemId));
+  return getPlayerShip();
+}
+
+/**
+ * Looks up a system by id. Returns { id, name, x, y } or null.
+ */
+function getSystemById_(systemId) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Systems');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (Number(data[i][0]) === Number(systemId)) {
+      return {
+        id:   data[i][0],
+        name: data[i][1],
+        x:    Number(data[i][2]),
+        y:    Number(data[i][3])
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Attempts a jump to targetSystemId.
+ *
+ * currentTick is supplied by the client (single-player; trust the
+ * client's clock). The server uses it for the recharge check and
+ * also persists it via saveSimTime so the saved tick stays current.
+ *
+ * Returns:
+ *   { ok: true,  ship: <updated ship state> }
+ *   { ok: false, reason: 'unknown_system' }
+ *   { ok: false, reason: 'out_of_range', distance, range }
+ *   { ok: false, reason: 'recharging', ticksRemaining }
+ */
+function executeJump(targetSystemId, currentTick) {
+  var ship    = getPlayerShip();
+  var current = getSystemById_(ship.systemId);
+  var target  = getSystemById_(targetSystemId);
+
+  if (!target || !current) {
+    return { ok: false, reason: 'unknown_system' };
+  }
+
+  var dx       = target.x - current.x;
+  var dy       = target.y - current.y;
+  var distance = Math.sqrt(dx * dx + dy * dy);
+  if (distance > JUMP_RANGE_LY) {
+    return { ok: false, reason: 'out_of_range', distance: distance, range: JUMP_RANGE_LY };
+  }
+
+  var nowTick        = Number(currentTick);
+  var ticksRemaining = (ship.lastJumpTick + RECHARGE_TICKS) - nowTick;
+  if (ticksRemaining > 0) {
+    return { ok: false, reason: 'recharging', ticksRemaining: ticksRemaining };
+  }
+
+  // Commit. Both rows exist by construction (getPlayerShip seeds them).
+  var sheet   = getSaveDataSheet();
+  var sysRow  = findSaveRow(sheet, 'PLAYER_SHIP_SYSTEM_ID');
+  var jumpRow = findSaveRow(sheet, 'PLAYER_SHIP_LAST_JUMP');
+  sheet.getRange(sysRow,  2).setValue(Number(targetSystemId));
+  sheet.getRange(jumpRow, 2).setValue(nowTick);
+  saveSimTime(nowTick);
+
+  return {
+    ok: true,
+    ship: {
+      systemId:      Number(targetSystemId),
+      lastJumpTick:  nowTick,
+      jumpRangeLy:   JUMP_RANGE_LY,
+      rechargeTicks: RECHARGE_TICKS
+    }
+  };
+}
+
 // ==============================================================
 // SYS-012  Character Behavior — Prompt Assembly & AI Interface
 // ============================================================
