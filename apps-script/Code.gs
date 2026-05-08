@@ -11,30 +11,36 @@ function doGet() {
 
 /**
  * Returns all star systems from the Systems sheet.
- * Each system: { id, name, x, y, revealYear }
- * 
- * Sheet columns:
- *   A: system_id
- *   B: system_name
- *   C: system_x
- *   D: system_y
- *   E: reveal_year
+ * Each system: { id, name, x, y, revealYear, hasSystemView }
+ *
+ * Reads has_system_view by header lookup so it tolerates new columns
+ * being added to the Systems sheet (per SYS-014 bootstrap).
  */
 function getSystems() {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Systems');
   var data = sheet.getDataRange().getValues();
-  var systems = [];
+  if (data.length < 2) return [];
+
+  var headers    = data[0];
+  var hasViewCol = headers.indexOf('has_system_view');   // -1 if column not yet added
+  var systems    = [];
 
   for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var hsv = false;
+    if (hasViewCol !== -1) {
+      var raw = row[hasViewCol];
+      hsv = (raw === true) || (raw === 1) || (String(raw).toUpperCase() === 'TRUE');
+    }
     systems.push({
-      id:         data[i][0],
-      name:       data[i][1],
-      x:          data[i][2],
-      y:          data[i][3],
-      revealYear: String(data[i][4])
+      id:            row[0],
+      name:          row[1],
+      x:             row[2],
+      y:             row[3],
+      revealYear:    String(row[4]),
+      hasSystemView: hsv
     });
   }
-
   return systems;
 }
 
