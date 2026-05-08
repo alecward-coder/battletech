@@ -1,8 +1,0 @@
-# Files clasp should NOT push to Apps Script.
-# Anything outside ./apps-script is ignored automatically by rootDir,
-# but we list explicit exclusions for safety.
-**/**
-!apps-script/**/*.gs
-!apps-script/**/*.js
-!apps-script/**/*.html
-!apps-script/appsscript.json
