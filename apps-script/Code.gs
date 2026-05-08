@@ -155,6 +155,7 @@ var JUMP_RANGE_LY           = 30;
 var RECHARGE_TICKS          = 7 * 86400;   // 7 days at 1 tick/sec = 604800
 var JUMP_PREP_TICKS         = 2 * 3600;    // 2 hours = 7200
 var DEFAULT_START_SYSTEM_ID = 2371;        // Terra
+var TICKS_PER_HOUR_SRV      = 3600;
 
 /**
  * Derives the ship's K-F drive state from raw fields + currentTick.
@@ -214,11 +215,27 @@ function getPlayerShip() {
   var pendingJumpTargetId = ensureSaveRow_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
   var jumpPrepEndTime     = ensureSaveRow_(sheet, 'PLAYER_SHIP_PREP_END',       0);
 
+  // [SYS-014] In-system position + transit state.
+  var defaultLocId = _systemPrimaryInhabitedBody_(systemId) ||
+                     _systemDefaultArrival_(systemId) || '';
+  var locationId   = ensureSaveRow_(sheet, 'PLAYER_SHIP_LOCATION_ID',
+                                    defaultLocId);
+  var locationKind = ensureSaveRow_(sheet, 'PLAYER_SHIP_LOCATION_KIND',
+                                    _locationKind_(locationId));
+  var transitTarget = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
+  var transitKind   = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
+  var transitEnd    = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+
   var ship = {
     systemId:            Number(systemId),
     lastJumpTick:        Number(lastJumpTick),
     pendingJumpTargetId: Number(pendingJumpTargetId),
     jumpPrepEndTime:     Number(jumpPrepEndTime),
+    locationId:          locationId,
+    locationKind:        locationKind,
+    transitTargetId:     transitTarget,
+    transitTargetKind:   transitKind,
+    transitEndTick:      Number(transitEnd),
     jumpRangeLy:         JUMP_RANGE_LY,
     rechargeTicks:       RECHARGE_TICKS,
     jumpPrepTicks:       JUMP_PREP_TICKS
@@ -226,7 +243,176 @@ function getPlayerShip() {
   // kfDriveState is stamped relative to seedSimTick (the saved tick).
   // Client should re-derive against its current simTick for live UI.
   ship.kfDriveState = deriveKfDriveState_(ship, seedSimTick);
+  ship.transitState = (transitTarget && transitTarget !== 0 && transitTarget !== '')
+                        ? 'TRANSITING' : 'IDLE';
   return ship;
+}
+
+// ─── In-system helpers ──────────────────────────────────────
+
+function _systemPrimaryInhabitedBody_(systemId) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Systems');
+  if (!sheet) return null;
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return null;
+  var col = data[0].indexOf('primary_inhabited_body_id');
+  if (col === -1) return null;
+  for (var i = 1; i < data.length; i++) {
+    if (Number(data[i][0]) === Number(systemId)) {
+      return data[i][col] || null;
+    }
+  }
+  return null;
+}
+
+function _systemDefaultArrival_(systemId) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Systems');
+  if (!sheet) return null;
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return null;
+  var col = data[0].indexOf('default_arrival_point');
+  if (col === -1) return null;
+  for (var i = 1; i < data.length; i++) {
+    if (Number(data[i][0]) === Number(systemId)) {
+      return data[i][col] || null;
+    }
+  }
+  return null;
+}
+
+function _locationKind_(locationId) {
+  if (!locationId) return '';
+  var s = String(locationId);
+  if (s.indexOf('-fac-') !== -1) return 'infrastructure';
+  if (s.indexOf('-jp-')  !== -1) return 'jump_point';
+  // Otherwise look up Celestial_Bodies for body_type
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Celestial_Bodies');
+  if (!sheet) return 'body';
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return 'body';
+  var idC   = data[0].indexOf('body_id');
+  var typeC = data[0].indexOf('body_type');
+  if (idC === -1) return 'body';
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][idC] === locationId) {
+      var t = typeC !== -1 ? data[i][typeC] : 'body';
+      if (t === 'asteroid_belt') return 'asteroid_belt';
+      if (t === 'star')          return 'star';
+      if (t === 'moon')          return 'moon';
+      return 'planet';
+    }
+  }
+  return 'body';
+}
+
+/**
+ * Finds a route (in either direction) between two locations within
+ * one system. Returns the route row as an object, or null.
+ */
+function _findRoute_(systemId, originId, destId) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('In_System_Routes');
+  if (!sheet) return null;
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return null;
+  var headers = data[0];
+  var sysC = headers.indexOf('system_id');
+  var oC   = headers.indexOf('origin_location_id');
+  var dC   = headers.indexOf('destination_location_id');
+  if (sysC === -1 || oC === -1 || dC === -1) return null;
+  for (var i = 1; i < data.length; i++) {
+    if (Number(data[i][sysC]) !== Number(systemId)) continue;
+    var o = data[i][oC], d = data[i][dC];
+    if ((o === originId && d === destId) || (o === destId && d === originId)) {
+      var obj = {};
+      for (var c = 0; c < headers.length; c++) obj[headers[c]] = data[i][c];
+      return obj;
+    }
+  }
+  return null;
+}
+
+// ─── In-system transit endpoints ────────────────────────────
+
+/**
+ * Begin transit from the ship's current location to targetLocationId.
+ * Validates: not already transiting, no jump prep active, route exists.
+ *
+ * Returns { ok, ship, routeId, transitTicks } or
+ *         { ok:false, reason, ... }.
+ */
+function beginInSystemTransit(targetLocationId, currentTick) {
+  var nowTick = Number(currentTick);
+  var ship    = getPlayerShip();
+
+  if (ship.transitState === 'TRANSITING') {
+    return { ok: false, reason: 'already_transiting' };
+  }
+  if (ship.kfDriveState === 'PREPPING' || ship.kfDriveState === 'READY_TO_JUMP') {
+    return { ok: false, reason: 'jump_prep_active' };
+  }
+  if (!ship.locationId) {
+    return { ok: false, reason: 'no_origin_location' };
+  }
+  if (ship.locationId === targetLocationId) {
+    return { ok: false, reason: 'already_at_destination' };
+  }
+
+  var route = _findRoute_(ship.systemId, ship.locationId, targetLocationId);
+  if (!route) {
+    return { ok: false, reason: 'no_route', origin: ship.locationId, target: targetLocationId };
+  }
+
+  var hours = Number(route.estimated_travel_time_hours) ||
+              (Number(route.estimated_travel_time_days || 0) * 24);
+  var transitTicks = Math.round(hours * TICKS_PER_HOUR_SRV);
+  if (transitTicks <= 0) transitTicks = TICKS_PER_HOUR_SRV;  // floor 1 hour
+
+  var sheet = getSaveDataSheet();
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', targetLocationId);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   _locationKind_(targetLocationId));
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    nowTick + transitTicks);
+  saveSimTime(nowTick);
+
+  return {
+    ok: true,
+    ship: getPlayerShip(),
+    routeId: route.route_id,
+    transitTicks: transitTicks
+  };
+}
+
+/**
+ * Idempotent finalize: if currentTick has passed transitEndTick, move
+ * the ship's location to the transit target and clear transit fields.
+ */
+function finalizeTransit(currentTick) {
+  var nowTick = Number(currentTick);
+  var ship    = getPlayerShip();
+
+  if (ship.transitState !== 'TRANSITING' || nowTick < ship.transitEndTick) {
+    return { ok: true, ship: ship, finalized: false };
+  }
+
+  var sheet = getSaveDataSheet();
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_ID',    ship.transitTargetId);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_KIND',  ship.transitTargetKind);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  return { ok: true, ship: getPlayerShip(), finalized: true };
+}
+
+/** Cancels an in-progress transit. Ship stays at the origin location. */
+function abortInSystemTransit() {
+  var ship = getPlayerShip();
+  if (ship.transitState !== 'TRANSITING') {
+    return { ok: false, reason: 'not_transiting' };
+  }
+  var sheet = getSaveDataSheet();
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  return { ok: true, ship: getPlayerShip() };
 }
 
 /** Writes a single SaveData key. Assumes the row already exists. */
@@ -241,8 +427,10 @@ function writeSaveKey_(sheet, key, value) {
 
 /**
  * Sets the player's current system without consuming charge.
- * Also clears any pending prep so the dev "set as starting position"
- * is a clean reset. Dev / testing helper.
+ * Also clears any pending jump prep / in-system transit so the dev
+ * "set as starting position" is a clean reset. Default in-system
+ * location resolves to the destination's primary inhabited body
+ * (or default arrival point) so the ship lands somewhere sensible.
  */
 function setPlayerLocation(systemId) {
   getPlayerShip();   // ensures all rows exist
@@ -250,6 +438,13 @@ function setPlayerLocation(systemId) {
   writeSaveKey_(sheet, 'PLAYER_SHIP_SYSTEM_ID',      Number(systemId));
   writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  var arrivalLoc = _systemPrimaryInhabitedBody_(systemId) ||
+                   _systemDefaultArrival_(systemId) || '';
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_ID',    arrivalLoc);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_KIND',  _locationKind_(arrivalLoc));
   return getPlayerShip();
 }
 
@@ -302,6 +497,18 @@ function beginJumpPrep(targetSystemId, currentTick) {
   if (state !== 'READY') {
     return { ok: false, reason: 'invalid_state', state: state };
   }
+  if (ship.transitState === 'TRANSITING') {
+    return { ok: false, reason: 'in_transit' };
+  }
+  // [SYS-014] Must be at a jump point in the current system.
+  if (ship.locationKind !== 'jump_point') {
+    return {
+      ok: false,
+      reason: 'not_at_jump_point',
+      currentLocationId: ship.locationId,
+      currentLocationKind: ship.locationKind
+    };
+  }
 
   var current = getSystemById_(ship.systemId);
   var target  = getSystemById_(targetSystemId);
@@ -339,11 +546,20 @@ function commitJump(currentTick) {
   var target = getSystemById_(ship.pendingJumpTargetId);
   if (!target) return { ok: false, reason: 'unknown_system' };
 
+  var arrivalLoc  = _systemDefaultArrival_(ship.pendingJumpTargetId) ||
+                    _systemPrimaryInhabitedBody_(ship.pendingJumpTargetId) || '';
+  var arrivalKind = _locationKind_(arrivalLoc);
+
   var sheet = getSaveDataSheet();
   writeSaveKey_(sheet, 'PLAYER_SHIP_SYSTEM_ID',      Number(ship.pendingJumpTargetId));
   writeSaveKey_(sheet, 'PLAYER_SHIP_LAST_JUMP',      nowTick);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_ID',    arrivalLoc);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_KIND',  arrivalKind);
   saveSimTime(nowTick);
 
   return { ok: true, ship: getPlayerShip() };
@@ -378,11 +594,20 @@ function emergencyJump(targetSystemId, currentTick) {
   var risk = calculateEmergencyJumpRisk_(ship, target, nowTick);
   resolveEmergencyJumpConsequences_(ship, risk);   // no-op stub for now
 
+  var arrivalLoc  = _systemDefaultArrival_(targetSystemId) ||
+                    _systemPrimaryInhabitedBody_(targetSystemId) || '';
+  var arrivalKind = _locationKind_(arrivalLoc);
+
   var sheet = getSaveDataSheet();
   writeSaveKey_(sheet, 'PLAYER_SHIP_SYSTEM_ID',      Number(targetSystemId));
   writeSaveKey_(sheet, 'PLAYER_SHIP_LAST_JUMP',      nowTick);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_ID',    arrivalLoc);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_KIND',  arrivalKind);
   saveSimTime(nowTick);
 
   return {
