@@ -434,6 +434,5 @@ function talkToCharacter(characterId, targetId, playerInput) {
   const workingMemory = selectWorkingMemory_(memories, goals, relationship);
 
   const payload = assemblePayload_(character, relationship, goals, workingMemory, playerInput);
-  const payload = assemblePayload_(character, relationship, goals, workingMemory, playerInput);
   return callAnthropic_(payload.systemPrompt, payload.userMessage);
 }
