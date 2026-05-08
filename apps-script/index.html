@@ -16,8 +16,6 @@
     #systemActions { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
     #systemActions button { font-size: 11px; padding: 4px 8px; }
     #systemActions button:disabled { opacity: 0.35; cursor: not-allowed; }
-    #systemActions .btn-jump { color: #0fa; border-color: #0fa; }
-    #systemActions .btn-jump:hover:enabled { background: #0fa; color: #000; }
     #controls { margin-top: 20px; padding-top: 12px; border-top: 1px solid #333; font-size: 11px; color: #555; line-height: 1.8; }
     #header { background: #12121a; padding: 8px 12px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; }
     #header h1 { font-size: 14px; color: #0fa; }
@@ -27,6 +25,36 @@
     #systemCount { font-size: 10px; color: #556; margin-left: 12px; }
     button { background: #222; border: 1px solid #444; color: #aaa; padding: 4px 10px; cursor: pointer; font-family: monospace; }
     button:hover { background: #333; }
+
+    /* SYS-013 wait bar */
+    #waitBar { background: #0f0f17; padding: 6px 12px; border-bottom: 1px solid #2a2a36; display: flex; align-items: center; gap: 6px; font-family: monospace; }
+    #waitBar button { font-size: 11px; padding: 3px 8px; }
+    .waitBar-label { font-size: 11px; color: #555; margin-right: 4px; }
+    .waitBar-next { color: #8cf !important; border-color: #8cf !important; }
+    .waitBar-next:hover { background: #8cf !important; color: #000 !important; }
+    .waitBar-status { font-size: 10px; color: #556; margin-left: 12px; flex: 1; }
+
+    /* SYS-013 ship prep status */
+    #shipPrep { font-size: 11px; color: #cf8; margin-top: 4px; line-height: 1.5; }
+
+    /* SYS-013 crew announcements */
+    #announcementLog { font-size: 10px; color: #888; line-height: 1.5; max-height: 160px; overflow-y: auto; padding-right: 4px; }
+    #announcementLog .ann-row { padding: 2px 0; border-bottom: 1px solid #1f1f28; }
+    #announcementLog .ann-row:last-child { border-bottom: none; }
+    #announcementLog .ann-time { color: #445; margin-right: 4px; }
+    #announcementLog .ann-text { color: #aaa; }
+    #announcementLog .ann-emergency .ann-text { color: #f96; }
+    #announcementLog .ann-empty { color: #333; font-style: italic; }
+
+    /* SYS-013 jump action button styles */
+    #systemActions .btn-prep { color: #0fa; border-color: #0fa; }
+    #systemActions .btn-prep:hover:enabled { background: #0fa; color: #000; }
+    #systemActions .btn-commit { color: #cf8; border-color: #cf8; }
+    #systemActions .btn-commit:hover:enabled { background: #cf8; color: #000; }
+    #systemActions .btn-emergency { color: #f96; border-color: #f96; }
+    #systemActions .btn-emergency:hover:enabled { background: #f96; color: #000; }
+    #systemActions .btn-abort { color: #f66; border-color: #f66; }
+    #systemActions .btn-abort:hover:enabled { background: #f66; color: #000; }
 
     /* Music button */
     #musicBtn {
@@ -86,6 +114,15 @@
       <span id="zoom">100%</span>
     </div>
   </div>
+  <div id="waitBar">
+    <span class="waitBar-label">Wait:</span>
+    <button onclick="advanceTime(30 * 60)">30m</button>
+    <button onclick="advanceTime(1 * 3600)">1h</button>
+    <button onclick="advanceTime(6 * 3600)">6h</button>
+    <button onclick="advanceTime(1 * 86400)">1d</button>
+    <button onclick="waitUntilNextEvent()" class="waitBar-next">⏭ Next event</button>
+    <span id="nextEventLabel" class="waitBar-status"></span>
+  </div>
   <div id="container">
     <div id="canvasWrap">
       <canvas id="canvas"></canvas>
@@ -94,11 +131,15 @@
       <h2>SHIP STATUS</h2>
       <div id="shipCurrent">-</div>
       <div id="shipDrive">-</div>
+      <div id="shipPrep"></div>
 
       <h2 style="margin-top: 16px">SELECTED SYSTEM</h2>
       <div id="systemName">-</div>
       <div id="systemInfo"></div>
       <div id="systemActions"></div>
+
+      <h2 style="margin-top: 16px">CREW ANNOUNCEMENTS</h2>
+      <div id="announcementLog"></div>
 
       <div id="controls">
         Pan: drag<br>
@@ -210,14 +251,16 @@
     // ─────────────────────────────────────────────
     function tickClock() {
       var elapsedSeconds = Math.floor((Date.now() - sessionRealStart) / 1000);
-      simTick = sessionTickStart + elapsedSeconds;
+      simTick = sessionTickStart + elapsedSeconds + advanceOffsetTicks;
       simYear = ticksToYear(simTick);
       document.getElementById('simClock').textContent = ticksToTC(simTick);
       updateSystemCount();
-      // [SYS-013] Keep ship-status drive timer + selected-system jump button live.
+      // [SYS-013] Drive state machine + tick-driven announcements.
       if (ship) {
+        processDueEvents();
         updateShipStatus();
         if (selected) updatePanel();
+        updateNextEventLabel();
       }
     }
 
@@ -252,18 +295,35 @@
     window.addEventListener('beforeunload', saveTime);
 
     // ─────────────────────────────────────────────
-    // SYS-013 MOVEMENT — constants & ship state
+    // SYS-013 MOVEMENT — constants, ship state, state machine
     // ─────────────────────────────────────────────
-    var JUMP_RANGE_LY  = 30;
-    var RECHARGE_TICKS = 7 * TICKS_PER_DAY;   // 604800
-    var ship = null;                          // { systemId, lastJumpTick, jumpRangeLy, rechargeTicks }
+    var JUMP_RANGE_LY   = 30;
+    var RECHARGE_TICKS  = 7 * TICKS_PER_DAY;   // 604800 = 7 days
+    var JUMP_PREP_TICKS = 2 * TICKS_PER_HOUR;  // 7200   = 2 hours
+    var ship = null;
+
+    // Time-advance offset accumulated by Wait buttons. Added on top
+    // of the wall-clock-derived elapsed seconds in tickClock().
+    var advanceOffsetTicks = 0;
+
+    // State-machine bookkeeping for one-shot announcements.
+    var _lastSeenState     = null;
+    var _halfwayFired      = false;
+    var _lastPendingTarget = 0;
 
     function loadShip() {
       google.script.run
         .withSuccessHandler(function(s) {
           ship = s;
+          // First load: prime the state-machine flags but suppress
+          // initial-state announcements.
+          _lastSeenState     = getKfDriveState();
+          _lastPendingTarget = Number(ship.pendingJumpTargetId || 0);
+          _halfwayFired      = (_lastSeenState !== 'PREPPING') ? true : false;
+          renderAnnouncementLog();   // shows "(no announcements yet)" until something fires
           updateShipStatus();
           updatePanel();
+          updateNextEventLabel();
           draw();
         })
         .withFailureHandler(function(err) {
@@ -281,73 +341,348 @@
       return null;
     }
 
+    function getPendingTargetSystem() {
+      if (!ship || !ship.pendingJumpTargetId) return null;
+      for (var i = 0; i < systems.length; i++) {
+        if (Number(systems[i].id) === Number(ship.pendingJumpTargetId)) return systems[i];
+      }
+      return null;
+    }
+
     function distanceLy(a, b) {
       var dx = a.x - b.x, dy = a.y - b.y;
       return Math.sqrt(dx * dx + dy * dy);
     }
 
-    function rechargeStatus() {
-      if (!ship) return { ready: false, ticksRemaining: 0 };
-      var ticksRemaining = (Number(ship.lastJumpTick) + RECHARGE_TICKS) - simTick;
-      return { ready: ticksRemaining <= 0, ticksRemaining: Math.max(0, ticksRemaining) };
-    }
-
     function formatTicks(ticks) {
-      var s = Math.floor(ticks);
-      var d = Math.floor(s / TICKS_PER_DAY);
-      s -= d * TICKS_PER_DAY;
-      var h = Math.floor(s / TICKS_PER_HOUR);
-      s -= h * TICKS_PER_HOUR;
+      var s = Math.max(0, Math.floor(ticks));
+      var d = Math.floor(s / TICKS_PER_DAY);     s -= d * TICKS_PER_DAY;
+      var h = Math.floor(s / TICKS_PER_HOUR);    s -= h * TICKS_PER_HOUR;
       var m = Math.floor(s / TICKS_PER_MINUTE);
       if (d > 0) return d + 'd ' + h + 'h';
       if (h > 0) return h + 'h ' + m + 'm';
-      return m + 'm';
+      if (m > 0) return m + 'm';
+      return '<1m';
     }
 
+    function getKfDriveState() {
+      if (!ship) return 'UNKNOWN';
+      var isRecharging = simTick < (Number(ship.lastJumpTick) + RECHARGE_TICKS);
+      var hasPrep      = !!ship.pendingJumpTargetId && Number(ship.pendingJumpTargetId) !== 0;
+      if (hasPrep) {
+        if (isRecharging) return 'RECHARGING';
+        if (simTick < Number(ship.jumpPrepEndTime)) return 'PREPPING';
+        return 'READY_TO_JUMP';
+      }
+      if (isRecharging) return 'RECHARGING';
+      return 'READY';
+    }
+
+    function rechargeRemaining() {
+      if (!ship) return 0;
+      return Math.max(0, (Number(ship.lastJumpTick) + RECHARGE_TICKS) - simTick);
+    }
+
+    function prepRemaining() {
+      if (!ship || !ship.pendingJumpTargetId) return 0;
+      return Math.max(0, Number(ship.jumpPrepEndTime) - simTick);
+    }
+
+    // ─────────────────────────────────────────────
+    // SYS-013 — Crew announcement system
+    // ─────────────────────────────────────────────
+    var ANNOUNCEMENT_TEXT = {
+      JUMP_PREP_STARTED:        'All hands, prepare for jump. Secure stations and confirm readiness.',
+      JUMP_PREP_HALFWAY:        'Jump preparation is underway. Navigation and engineering teams continue final checks.',
+      JUMP_PREP_COMPLETE:       'Jump prep complete. Awaiting command authorization.',
+      JUMP_COMMIT:              'Command authorization received. Initiating jump sequence.',
+      JUMP_ARRIVAL:             'Jump complete. Confirming position and shipwide status.',
+      EMERGENCY_JUMP_INITIATED: 'Emergency jump authorized. Brace for immediate transition.',
+      DRIVE_RECHARGE_STARTED:   'K-F drive recharge cycle initiated.',
+      DRIVE_RECHARGE_COMPLETE:  'K-F drive recharge complete. Jump capability restored.',
+      JUMP_ABORTED:             'Jump preparation aborted. Returning to standard operations.'
+    };
+    var EMERGENCY_TYPES = { EMERGENCY_JUMP_INITIATED: true };
+
+    var announcementLog = [];   // most-recent first; capped at 8
+
+    function playCrewAnnouncement(eventType, payload) {
+      var text = ANNOUNCEMENT_TEXT[eventType] || eventType;
+      announcementLog.unshift({
+        eventType: eventType,
+        text:      text,
+        tick:      simTick,
+        payload:   payload || null
+      });
+      if (announcementLog.length > 8) announcementLog.length = 8;
+      renderAnnouncementLog();
+      console.log('[SYS-013]', eventType, text, payload || '');
+    }
+
+    function renderAnnouncementLog() {
+      var el = document.getElementById('announcementLog');
+      if (!el) return;
+      if (!announcementLog.length) {
+        el.innerHTML = '<div class="ann-empty">(no announcements yet)</div>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < announcementLog.length; i++) {
+        var a = announcementLog[i];
+        var time = formatHHMM(a.tick);
+        var cls  = 'ann-row' + (EMERGENCY_TYPES[a.eventType] ? ' ann-emergency' : '');
+        html += '<div class="' + cls + '">' +
+                  '<span class="ann-time">' + time + '</span>' +
+                  '<span class="ann-text">'  + escapeHtml(a.text) + '</span>' +
+                '</div>';
+      }
+      el.innerHTML = html;
+    }
+
+    function formatHHMM(ticks) {
+      var ms = FTL_EPOCH_MS + (ticks * 1000);
+      var d = new Date(ms);
+      return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, function(c) {
+        return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
+      });
+    }
+
+    // ─────────────────────────────────────────────
+    // SYS-013 — Tick-driven event processor
+    // (called every simulation tick + after time advances)
+    // ─────────────────────────────────────────────
+    function processDueEvents() {
+      if (!ship) return;
+
+      // Reset halfway one-shot when the prep target changes
+      var pending = Number(ship.pendingJumpTargetId || 0);
+      if (pending !== _lastPendingTarget) {
+        _halfwayFired      = (pending === 0);
+        _lastPendingTarget = pending;
+      }
+
+      var newState = getKfDriveState();
+
+      // Halfway one-shot during PREPPING
+      if (newState === 'PREPPING' && !_halfwayFired) {
+        var halfwayTick = Number(ship.jumpPrepEndTime) - (JUMP_PREP_TICKS / 2);
+        if (simTick >= halfwayTick) {
+          playCrewAnnouncement('JUMP_PREP_HALFWAY');
+          _halfwayFired = true;
+        }
+      }
+
+      // State-transition announcements (only the tick-driven ones —
+      // action-driven transitions emit their own announcements
+      // imperatively in the action handlers).
+      if (newState !== _lastSeenState) {
+        if (_lastSeenState === 'PREPPING' && newState === 'READY_TO_JUMP') {
+          playCrewAnnouncement('JUMP_PREP_COMPLETE');
+        }
+        if (_lastSeenState === 'RECHARGING' && newState === 'READY') {
+          playCrewAnnouncement('DRIVE_RECHARGE_COMPLETE');
+        }
+        _lastSeenState = newState;
+      }
+    }
+
+    // ─────────────────────────────────────────────
+    // SYS-013 — Time advance
+    // ─────────────────────────────────────────────
+    function advanceTime(ticks) {
+      advanceOffsetTicks += Number(ticks);
+      tickClock();         // recompute simTick + fire processDueEvents
+      saveTime();          // persist immediately so reload picks up the advance
+      updatePanel();
+      updateNextEventLabel();
+    }
+
+    function getNextPendingEventTime() {
+      if (!ship) return null;
+      var candidates = [];
+      var state = getKfDriveState();
+
+      if (state === 'PREPPING') {
+        var halfway = Number(ship.jumpPrepEndTime) - (JUMP_PREP_TICKS / 2);
+        if (simTick < halfway && !_halfwayFired) candidates.push({ time: halfway, label: 'jump prep halfway' });
+        if (simTick < Number(ship.jumpPrepEndTime)) {
+          candidates.push({ time: Number(ship.jumpPrepEndTime), label: 'jump prep complete' });
+        }
+      }
+      if (state === 'RECHARGING') {
+        candidates.push({ time: Number(ship.lastJumpTick) + RECHARGE_TICKS, label: 'drive recharge complete' });
+      }
+
+      if (!candidates.length) return null;
+      // Earliest event wins.
+      candidates.sort(function(a, b) { return a.time - b.time; });
+      return candidates[0];
+    }
+
+    function waitUntilNextEvent() {
+      var next = getNextPendingEventTime();
+      if (!next) {
+        updateNextEventLabel('No pending timed actions.');
+        return;
+      }
+      var delta = Math.max(0, next.time - simTick) + 1; // +1 to land just past the threshold
+      advanceTime(delta);
+    }
+
+    function updateNextEventLabel(text) {
+      var el = document.getElementById('nextEventLabel');
+      if (!el) return;
+      if (typeof text === 'string') { el.textContent = text; return; }
+      var next = getNextPendingEventTime();
+      if (!next) { el.textContent = ''; return; }
+      el.textContent = 'Next: ' + next.label + ' in ' + formatTicks(next.time - simTick);
+    }
+
+    // ─────────────────────────────────────────────
+    // SYS-013 — Ship-status panel
+    // ─────────────────────────────────────────────
     function updateShipStatus() {
       if (!ship) return;
       var current = getCurrentSystem();
       document.getElementById('shipCurrent').textContent =
         'At: ' + (current ? current.name : '#' + ship.systemId);
 
-      var status = rechargeStatus();
       var driveEl = document.getElementById('shipDrive');
-      if (status.ready) {
-        driveEl.textContent = 'K-F drive: ready';
-        driveEl.style.color = '#0fa';
-      } else {
-        driveEl.textContent = 'K-F drive: recharging — ' + formatTicks(status.ticksRemaining);
-        driveEl.style.color = '#888';
+      var prepEl  = document.getElementById('shipPrep');
+      var state   = getKfDriveState();
+
+      switch (state) {
+        case 'READY':
+          driveEl.textContent = 'K-F drive: ready';
+          driveEl.style.color = '#0fa';
+          prepEl.textContent  = '';
+          break;
+        case 'PREPPING':
+          var pendT = getPendingTargetSystem();
+          driveEl.textContent = 'K-F drive: prepping';
+          driveEl.style.color = '#cf8';
+          prepEl.textContent  = 'Target: ' + (pendT ? pendT.name : '#' + ship.pendingJumpTargetId) +
+                                ' · prep complete in ' + formatTicks(prepRemaining());
+          break;
+        case 'READY_TO_JUMP':
+          var pT = getPendingTargetSystem();
+          driveEl.textContent = 'K-F drive: ready to jump';
+          driveEl.style.color = '#cf8';
+          prepEl.textContent  = 'Target: ' + (pT ? pT.name : '#' + ship.pendingJumpTargetId) +
+                                ' · awaiting command authorization';
+          break;
+        case 'RECHARGING':
+          driveEl.textContent = 'K-F drive: recharging — ' + formatTicks(rechargeRemaining());
+          driveEl.style.color = '#888';
+          prepEl.textContent  = '';
+          break;
+        default:
+          driveEl.textContent = 'K-F drive: ' + state.toLowerCase();
+          driveEl.style.color = '#888';
+          prepEl.textContent  = '';
       }
     }
 
-    function jumpToSelected() {
+    // ─────────────────────────────────────────────
+    // SYS-013 — Action handlers
+    // ─────────────────────────────────────────────
+    function beginJumpPrep() {
       if (!selected || !ship) return;
-      var btn = document.getElementById('btn-jump');
-      if (btn) { btn.disabled = true; btn.textContent = 'Jumping...'; }
+      _setActionsBusy('Starting jump prep...');
       google.script.run
         .withSuccessHandler(function(result) {
           if (result.ok) {
             ship = result.ship;
-            updateShipStatus();
-            updatePanel();
-            draw();
+            playCrewAnnouncement('JUMP_PREP_STARTED');
+            _lastSeenState = getKfDriveState();
+            _halfwayFired  = false;
+            updateShipStatus(); updatePanel(); updateNextEventLabel(); draw();
           } else {
-            var msg = 'Jump failed: ' + result.reason;
-            if (result.reason === 'recharging') {
-              msg += ' (' + formatTicks(result.ticksRemaining) + ' remaining)';
-            } else if (result.reason === 'out_of_range') {
-              msg += ' (' + result.distance.toFixed(1) + ' / ' + result.range + ' LY)';
-            }
-            alert(msg);
+            alert(_describeFailure(result));
             updatePanel();
           }
         })
         .withFailureHandler(function(err) {
-          alert('Jump error: ' + err.message);
+          alert('Begin-prep error: ' + err.message);
           updatePanel();
         })
-        .executeJump(selected.id, simTick);
+        .beginJumpPrep(selected.id, simTick);
+    }
+
+    function commitJumpAction() {
+      if (!ship) return;
+      _setActionsBusy('Committing jump...');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.ok) {
+            ship = result.ship;
+            playCrewAnnouncement('JUMP_COMMIT');
+            playCrewAnnouncement('JUMP_ARRIVAL');
+            playCrewAnnouncement('DRIVE_RECHARGE_STARTED');
+            _lastSeenState = getKfDriveState();
+            updateShipStatus(); updatePanel(); updateNextEventLabel(); draw();
+          } else {
+            alert(_describeFailure(result));
+            updatePanel();
+          }
+        })
+        .withFailureHandler(function(err) {
+          alert('Commit-jump error: ' + err.message);
+          updatePanel();
+        })
+        .commitJump(simTick);
+    }
+
+    function emergencyJumpAction() {
+      if (!selected || !ship) return;
+      if (!confirm('Emergency jump bypasses prep and is logged as a risk event. Proceed?')) return;
+      _setActionsBusy('Emergency jump...');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.ok) {
+            ship = result.ship;
+            playCrewAnnouncement('EMERGENCY_JUMP_INITIATED', result.risk);
+            playCrewAnnouncement('JUMP_ARRIVAL');
+            playCrewAnnouncement('DRIVE_RECHARGE_STARTED');
+            _lastSeenState = getKfDriveState();
+            updateShipStatus(); updatePanel(); updateNextEventLabel(); draw();
+          } else {
+            alert(_describeFailure(result));
+            updatePanel();
+          }
+        })
+        .withFailureHandler(function(err) {
+          alert('Emergency-jump error: ' + err.message);
+          updatePanel();
+        })
+        .emergencyJump(selected.id, simTick);
+    }
+
+    function abortJumpPrepAction() {
+      if (!ship) return;
+      _setActionsBusy('Aborting prep...');
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.ok) {
+            ship = result.ship;
+            playCrewAnnouncement('JUMP_ABORTED');
+            _lastSeenState = getKfDriveState();
+            _halfwayFired  = true; // no halfway to fire after abort
+            updateShipStatus(); updatePanel(); updateNextEventLabel(); draw();
+          } else {
+            alert(_describeFailure(result));
+            updatePanel();
+          }
+        })
+        .withFailureHandler(function(err) {
+          alert('Abort error: ' + err.message);
+          updatePanel();
+        })
+        .abortJumpPrep(simTick);
     }
 
     function setStartHere() {
@@ -355,11 +690,32 @@
       google.script.run
         .withSuccessHandler(function(s) {
           ship = s;
-          updateShipStatus();
-          updatePanel();
-          draw();
+          _lastSeenState     = getKfDriveState();
+          _halfwayFired      = true;
+          _lastPendingTarget = 0;
+          updateShipStatus(); updatePanel(); updateNextEventLabel(); draw();
         })
         .setPlayerLocation(selected.id);
+    }
+
+    function _describeFailure(result) {
+      var msg = 'Action failed: ' + result.reason;
+      if (result.reason === 'recharging') {
+        msg += ' (' + formatTicks(result.ticksRemaining) + ' remaining)';
+      } else if (result.reason === 'out_of_range') {
+        msg += ' (' + result.distance.toFixed(1) + ' / ' + result.range + ' LY)';
+      } else if (result.state) {
+        msg += ' (current state: ' + result.state + ')';
+      }
+      return msg;
+    }
+
+    function _setActionsBusy(label) {
+      var actionsEl = document.getElementById('systemActions');
+      if (!actionsEl) return;
+      var btns = actionsEl.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+      // Don't change labels — just disable. Server response will repaint.
     }
 
     // ─────────────────────────────────────────────
@@ -533,11 +889,15 @@
       // [SYS-013] Distance from current ship location
       var current = getCurrentSystem();
       var fromShipHtml = '';
+      var pendingT = ship ? Number(ship.pendingJumpTargetId || 0) : 0;
       if (current && Number(current.id) !== Number(selected.id)) {
         var d = distanceLy(current, selected).toFixed(1);
         fromShipHtml = 'From Ship: '  + d  + ' LY<br>';
       } else if (current && Number(current.id) === Number(selected.id)) {
         fromShipHtml = '<span style="color:#f0a">You are here.</span><br>';
+      }
+      if (pendingT && pendingT === Number(selected.id)) {
+        fromShipHtml += '<span style="color:#cf8">Pending jump target.</span><br>';
       }
 
       document.getElementById('systemInfo').innerHTML =
@@ -548,27 +908,65 @@
         fromShipHtml +
         'Revealed: '    + selected.revealYear;
 
-      // [SYS-013] Action buttons
+      // [SYS-013] Action buttons — keyed off the K-F drive state machine.
       actionsEl.innerHTML = '';
-      if (ship && current && Number(current.id) !== Number(selected.id)) {
-        var distance = distanceLy(current, selected);
-        var status   = rechargeStatus();
-        var inRange  = distance <= JUMP_RANGE_LY;
+      if (!ship || !current) {
+        // Ship not loaded yet
+        var setBtn0 = document.createElement('button');
+        setBtn0.textContent = 'Set as starting position';
+        setBtn0.onclick = setStartHere;
+        actionsEl.appendChild(setBtn0);
+        return;
+      }
 
-        var jumpBtn = document.createElement('button');
-        jumpBtn.id = 'btn-jump';
-        jumpBtn.className = 'btn-jump';
-        jumpBtn.onclick = jumpToSelected;
+      var state    = getKfDriveState();
+      var atSelf   = Number(current.id) === Number(selected.id);
+      var distance = atSelf ? 0 : distanceLy(current, selected);
+      var inRange  = distance <= JUMP_RANGE_LY;
+      var isPendingTarget = pendingT && pendingT === Number(selected.id);
+
+      // Helper to add a button
+      function addBtn(label, cls, onClickFn, disabled) {
+        var b = document.createElement('button');
+        b.textContent = label;
+        if (cls) b.className = cls;
+        b.onclick = onClickFn;
+        b.disabled = !!disabled;
+        actionsEl.appendChild(b);
+        return b;
+      }
+
+      if (state === 'READY' && !atSelf) {
         if (!inRange) {
-          jumpBtn.textContent = 'Out of range (' + distance.toFixed(1) + ' LY)';
-          jumpBtn.disabled = true;
-        } else if (!status.ready) {
-          jumpBtn.textContent = 'Recharging — ' + formatTicks(status.ticksRemaining);
-          jumpBtn.disabled = true;
+          addBtn('Out of range (' + distance.toFixed(1) + ' LY)', 'btn-prep', null, true);
         } else {
-          jumpBtn.textContent = 'Jump here (' + distance.toFixed(1) + ' LY)';
+          addBtn('Begin Jump Prep (' + distance.toFixed(1) + ' LY)', 'btn-prep', beginJumpPrep);
+          addBtn('Emergency Jump',                                  'btn-emergency', emergencyJumpAction);
         }
-        actionsEl.appendChild(jumpBtn);
+      } else if (state === 'PREPPING') {
+        if (isPendingTarget) {
+          addBtn('Jump prep in progress — ' + formatTicks(prepRemaining()), 'btn-prep', null, true);
+          addBtn('Abort Jump Prep',                                          'btn-abort', abortJumpPrepAction);
+        } else if (!atSelf) {
+          if (!inRange) {
+            addBtn('Out of range (' + distance.toFixed(1) + ' LY)',          'btn-emergency', null, true);
+          } else {
+            addBtn('Emergency Jump (overrides prep)',                        'btn-emergency', emergencyJumpAction);
+          }
+        }
+      } else if (state === 'READY_TO_JUMP') {
+        if (isPendingTarget) {
+          addBtn('Commit Jump',                                              'btn-commit', commitJumpAction);
+          addBtn('Abort Jump Prep',                                          'btn-abort',  abortJumpPrepAction);
+        } else if (!atSelf) {
+          if (!inRange) {
+            addBtn('Out of range (' + distance.toFixed(1) + ' LY)',          'btn-emergency', null, true);
+          } else {
+            addBtn('Emergency Jump (skips current prep)',                    'btn-emergency', emergencyJumpAction);
+          }
+        }
+      } else if (state === 'RECHARGING' && !atSelf) {
+        addBtn('Recharging — ' + formatTicks(rechargeRemaining()),           'btn-prep', null, true);
       }
 
       // Always offer the dev "set as starting position" option.

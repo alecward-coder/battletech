@@ -120,64 +120,130 @@ function saveSimTime(tick) {
 
 // ─────────────────────────────────────────────────────────────
 // SYS-013: Movement & Jump — server-side
-// Player ship state, jump validation, K-F drive recharge tracking.
+// Player ship state, jump validation, K-F drive recharge tracking,
+// jump preparation sequence, and emergency-jump override.
 //
 // SaveData keys used:
-//   PLAYER_SHIP_SYSTEM_ID   | <system_id of current location>
-//   PLAYER_SHIP_LAST_JUMP   | <SIM_TIME tick of last jump>
+//   PLAYER_SHIP_SYSTEM_ID       | <system_id of current location>
+//   PLAYER_SHIP_LAST_JUMP       | <SIM_TIME tick of last jump>
+//   PLAYER_SHIP_PENDING_TARGET  | <system_id of pending jump target, 0 = none>
+//   PLAYER_SHIP_PREP_END        | <SIM_TIME tick when prep completes, 0 = none>
 //
-// Jump rules (Tier 1):
+// State machine (kfDriveState, derived from data):
+//   READY          drive charged, no pending target
+//   PREPPING       pending target set, currentTick <  prepEnd
+//   READY_TO_JUMP  pending target set, currentTick >= prepEnd
+//   RECHARGING     currentTick < lastJump + RECHARGE_TICKS
+//
+// Jump rules (Tier 2):
 //   - Distance check: Euclidean (system_x, system_y) <= JUMP_RANGE_LY
-//   - Recharge: lastJumpTick + RECHARGE_TICKS <= currentTick
-//   - Translation is instantaneous; recharge gates the next jump only.
-//   - No misjumps in this pass (see docs/discussions/jump-operations.md).
+//   - Normal jump: beginJumpPrep -> wait JUMP_PREP_TICKS -> commitJump
+//   - Emergency jump: bypass prep, immediate translate, log risk warning
+//   - Recharge: lastJumpTick + RECHARGE_TICKS <= currentTick before next prep
+//   - No misjumps yet (see docs/discussions/jump-operations.md);
+//     calculateEmergencyJumpRisk_ + resolveEmergencyJumpConsequences_
+//     stubbed for the future damage / misjump model.
 // ─────────────────────────────────────────────────────────────
 
 var JUMP_RANGE_LY           = 30;
 var RECHARGE_TICKS          = 7 * 86400;   // 7 days at 1 tick/sec = 604800
+var JUMP_PREP_TICKS         = 2 * 3600;    // 2 hours = 7200
 var DEFAULT_START_SYSTEM_ID = 2371;        // Terra
 
 /**
- * Returns the player's ship state. Idempotently ensures both required
- * SaveData rows exist; on first call seeds the player at Terra with
- * the drive fully charged (lastJumpTick = -RECHARGE_TICKS).
+ * Derives the ship's K-F drive state from raw fields + currentTick.
+ * Same logic mirrored on the client; keep them in sync.
  */
-function getPlayerShip() {
-  var sheet   = getSaveDataSheet();
-  var sysRow  = findSaveRow(sheet, 'PLAYER_SHIP_SYSTEM_ID');
-  if (sysRow === -1) {
-    sysRow = sheet.getLastRow() + 1;
-    sheet.getRange(sysRow, 1).setValue('PLAYER_SHIP_SYSTEM_ID');
-    sheet.getRange(sysRow, 2).setValue(DEFAULT_START_SYSTEM_ID);
+function deriveKfDriveState_(ship, currentTick) {
+  var isRecharging = currentTick < (ship.lastJumpTick + RECHARGE_TICKS);
+  var hasPrep      = ship.pendingJumpTargetId && ship.pendingJumpTargetId !== 0;
+
+  if (hasPrep) {
+    if (isRecharging) return 'RECHARGING';   // shouldn't normally happen
+    if (currentTick < ship.jumpPrepEndTime) return 'PREPPING';
+    return 'READY_TO_JUMP';
   }
-  var jumpRow = findSaveRow(sheet, 'PLAYER_SHIP_LAST_JUMP');
-  if (jumpRow === -1) {
-    jumpRow = sheet.getLastRow() + 1;
-    // Seed so the drive is "just charged" at the current sim time, not
-    // 7 in-game days into the FTL-epoch's future (which would mark the
-    // drive as recharging for ~26 in-game years).
-    var seedTick = getSimTime();
-    if (seedTick === null) seedTick = 0;
-    sheet.getRange(jumpRow, 1).setValue('PLAYER_SHIP_LAST_JUMP');
-    sheet.getRange(jumpRow, 2).setValue(seedTick - RECHARGE_TICKS - 1);
-  }
-  return {
-    systemId:      Number(sheet.getRange(sysRow,  2).getValue()),
-    lastJumpTick:  Number(sheet.getRange(jumpRow, 2).getValue()),
-    jumpRangeLy:   JUMP_RANGE_LY,
-    rechargeTicks: RECHARGE_TICKS
-  };
+  if (isRecharging) return 'RECHARGING';
+  return 'READY';
 }
 
 /**
- * Sets the player's current system without consuming charge or
- * affecting the jump cooldown. Dev / testing helper.
+ * Reads or seeds a SaveData row. If missing, creates a row with the
+ * given seed value. Returns the (possibly newly-written) numeric value.
+ */
+function ensureSaveRow_(sheet, key, seedValue) {
+  var row = findSaveRow(sheet, key);
+  if (row === -1) {
+    row = sheet.getLastRow() + 1;
+    sheet.getRange(row, 1).setValue(key);
+    sheet.getRange(row, 2).setValue(seedValue);
+    return seedValue;
+  }
+  return Number(sheet.getRange(row, 2).getValue());
+}
+
+/**
+ * Returns the player's ship state. Idempotently ensures all required
+ * SaveData rows exist; on first call seeds the player at Terra with
+ * the drive fully charged.
+ *
+ * Returns:
+ *   {
+ *     systemId, lastJumpTick,
+ *     pendingJumpTargetId, jumpPrepEndTime,
+ *     kfDriveState,
+ *     jumpRangeLy, rechargeTicks, jumpPrepTicks
+ *   }
+ */
+function getPlayerShip() {
+  var sheet = getSaveDataSheet();
+
+  var systemId    = ensureSaveRow_(sheet, 'PLAYER_SHIP_SYSTEM_ID', DEFAULT_START_SYSTEM_ID);
+  // Seed lastJumpTick relative to the current saved sim time so the
+  // drive is "just charged" at the start, not 7 in-game days into the
+  // FTL-epoch's future.
+  var seedSimTick = getSimTime();
+  if (seedSimTick === null) seedSimTick = 0;
+  var lastJumpTick = ensureSaveRow_(sheet, 'PLAYER_SHIP_LAST_JUMP', seedSimTick - RECHARGE_TICKS - 1);
+  var pendingJumpTargetId = ensureSaveRow_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
+  var jumpPrepEndTime     = ensureSaveRow_(sheet, 'PLAYER_SHIP_PREP_END',       0);
+
+  var ship = {
+    systemId:            Number(systemId),
+    lastJumpTick:        Number(lastJumpTick),
+    pendingJumpTargetId: Number(pendingJumpTargetId),
+    jumpPrepEndTime:     Number(jumpPrepEndTime),
+    jumpRangeLy:         JUMP_RANGE_LY,
+    rechargeTicks:       RECHARGE_TICKS,
+    jumpPrepTicks:       JUMP_PREP_TICKS
+  };
+  // kfDriveState is stamped relative to seedSimTick (the saved tick).
+  // Client should re-derive against its current simTick for live UI.
+  ship.kfDriveState = deriveKfDriveState_(ship, seedSimTick);
+  return ship;
+}
+
+/** Writes a single SaveData key. Assumes the row already exists. */
+function writeSaveKey_(sheet, key, value) {
+  var row = findSaveRow(sheet, key);
+  if (row === -1) {
+    row = sheet.getLastRow() + 1;
+    sheet.getRange(row, 1).setValue(key);
+  }
+  sheet.getRange(row, 2).setValue(value);
+}
+
+/**
+ * Sets the player's current system without consuming charge.
+ * Also clears any pending prep so the dev "set as starting position"
+ * is a clean reset. Dev / testing helper.
  */
 function setPlayerLocation(systemId) {
-  getPlayerShip();   // ensures both ship rows exist
-  var sheet  = getSaveDataSheet();
-  var sysRow = findSaveRow(sheet, 'PLAYER_SHIP_SYSTEM_ID');
-  sheet.getRange(sysRow, 2).setValue(Number(systemId));
+  getPlayerShip();   // ensures all rows exist
+  var sheet = getSaveDataSheet();
+  writeSaveKey_(sheet, 'PLAYER_SHIP_SYSTEM_ID',      Number(systemId));
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
   return getPlayerShip();
 }
 
@@ -200,58 +266,161 @@ function getSystemById_(systemId) {
   return null;
 }
 
-/**
- * Attempts a jump to targetSystemId.
- *
- * currentTick is supplied by the client (single-player; trust the
- * client's clock). The server uses it for the recharge check and
- * also persists it via saveSimTime so the saved tick stays current.
- *
- * Returns:
- *   { ok: true,  ship: <updated ship state> }
- *   { ok: false, reason: 'unknown_system' }
- *   { ok: false, reason: 'out_of_range', distance, range }
- *   { ok: false, reason: 'recharging', ticksRemaining }
- */
-function executeJump(targetSystemId, currentTick) {
-  var ship    = getPlayerShip();
-  var current = getSystemById_(ship.systemId);
-  var target  = getSystemById_(targetSystemId);
+function distanceLy_(a, b) {
+  var dx = a.x - b.x, dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
 
-  if (!target || !current) {
-    return { ok: false, reason: 'unknown_system' };
+/**
+ * Begin a normal jump: validates range + drive ready (READY only),
+ * stores pending target, sets prep-end tick.
+ *
+ * Returns { ok, ship } or { ok:false, reason, ... }.
+ *   reason: 'unknown_system' | 'out_of_range' | 'recharging' |
+ *           'already_prepping' | 'invalid_state'
+ */
+function beginJumpPrep(targetSystemId, currentTick) {
+  var nowTick = Number(currentTick);
+  var ship    = getPlayerShip();
+  var state   = deriveKfDriveState_(ship, nowTick);
+
+  if (state === 'RECHARGING') {
+    return {
+      ok: false, reason: 'recharging',
+      ticksRemaining: (ship.lastJumpTick + RECHARGE_TICKS) - nowTick
+    };
+  }
+  if (state === 'PREPPING' || state === 'READY_TO_JUMP') {
+    return { ok: false, reason: 'already_prepping' };
+  }
+  if (state !== 'READY') {
+    return { ok: false, reason: 'invalid_state', state: state };
   }
 
-  var dx       = target.x - current.x;
-  var dy       = target.y - current.y;
-  var distance = Math.sqrt(dx * dx + dy * dy);
+  var current = getSystemById_(ship.systemId);
+  var target  = getSystemById_(targetSystemId);
+  if (!target || !current) return { ok: false, reason: 'unknown_system' };
+
+  var distance = distanceLy_(current, target);
   if (distance > JUMP_RANGE_LY) {
     return { ok: false, reason: 'out_of_range', distance: distance, range: JUMP_RANGE_LY };
   }
 
-  var nowTick        = Number(currentTick);
-  var ticksRemaining = (ship.lastJumpTick + RECHARGE_TICKS) - nowTick;
-  if (ticksRemaining > 0) {
-    return { ok: false, reason: 'recharging', ticksRemaining: ticksRemaining };
+  var sheet   = getSaveDataSheet();
+  var prepEnd = nowTick + JUMP_PREP_TICKS;
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', Number(targetSystemId));
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       prepEnd);
+  saveSimTime(nowTick);
+
+  return { ok: true, ship: getPlayerShip() };
+}
+
+/**
+ * Commit a prepared jump. Requires state == READY_TO_JUMP.
+ *
+ * On success: ship's systemId becomes pendingJumpTargetId,
+ * lastJumpTick = nowTick, prep is cleared, drive enters recharge.
+ */
+function commitJump(currentTick) {
+  var nowTick = Number(currentTick);
+  var ship    = getPlayerShip();
+  var state   = deriveKfDriveState_(ship, nowTick);
+
+  if (state !== 'READY_TO_JUMP') {
+    return { ok: false, reason: 'invalid_state', state: state };
   }
 
-  // Commit. Both rows exist by construction (getPlayerShip seeds them).
-  var sheet   = getSaveDataSheet();
-  var sysRow  = findSaveRow(sheet, 'PLAYER_SHIP_SYSTEM_ID');
-  var jumpRow = findSaveRow(sheet, 'PLAYER_SHIP_LAST_JUMP');
-  sheet.getRange(sysRow,  2).setValue(Number(targetSystemId));
-  sheet.getRange(jumpRow, 2).setValue(nowTick);
+  var target = getSystemById_(ship.pendingJumpTargetId);
+  if (!target) return { ok: false, reason: 'unknown_system' };
+
+  var sheet = getSaveDataSheet();
+  writeSaveKey_(sheet, 'PLAYER_SHIP_SYSTEM_ID',      Number(ship.pendingJumpTargetId));
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LAST_JUMP',      nowTick);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
+  saveSimTime(nowTick);
+
+  return { ok: true, ship: getPlayerShip() };
+}
+
+/**
+ * Emergency jump: bypass prep, translate immediately. Allowed from
+ * any non-RECHARGING state. Clears any in-progress prep. Logs a
+ * risk warning via the stub but doesn't apply consequences yet.
+ */
+function emergencyJump(targetSystemId, currentTick) {
+  var nowTick = Number(currentTick);
+  var ship    = getPlayerShip();
+  var state   = deriveKfDriveState_(ship, nowTick);
+
+  if (state === 'RECHARGING') {
+    return {
+      ok: false, reason: 'recharging',
+      ticksRemaining: (ship.lastJumpTick + RECHARGE_TICKS) - nowTick
+    };
+  }
+
+  var current = getSystemById_(ship.systemId);
+  var target  = getSystemById_(targetSystemId);
+  if (!target || !current) return { ok: false, reason: 'unknown_system' };
+
+  var distance = distanceLy_(current, target);
+  if (distance > JUMP_RANGE_LY) {
+    return { ok: false, reason: 'out_of_range', distance: distance, range: JUMP_RANGE_LY };
+  }
+
+  var risk = calculateEmergencyJumpRisk_(ship, target, nowTick);
+  resolveEmergencyJumpConsequences_(ship, risk);   // no-op stub for now
+
+  var sheet = getSaveDataSheet();
+  writeSaveKey_(sheet, 'PLAYER_SHIP_SYSTEM_ID',      Number(targetSystemId));
+  writeSaveKey_(sheet, 'PLAYER_SHIP_LAST_JUMP',      nowTick);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
   saveSimTime(nowTick);
 
   return {
     ok: true,
-    ship: {
-      systemId:      Number(targetSystemId),
-      lastJumpTick:  nowTick,
-      jumpRangeLy:   JUMP_RANGE_LY,
-      rechargeTicks: RECHARGE_TICKS
-    }
+    ship: getPlayerShip(),
+    warning: 'Emergency jump performed. Shipwide disruption risk logged.',
+    risk: risk
   };
+}
+
+/**
+ * Cancels in-progress jump prep. Allowed from PREPPING or
+ * READY_TO_JUMP states. Drive remains at its prior recharge state.
+ */
+function abortJumpPrep(currentTick) {
+  var nowTick = Number(currentTick);
+  var ship    = getPlayerShip();
+  var state   = deriveKfDriveState_(ship, nowTick);
+
+  if (state !== 'PREPPING' && state !== 'READY_TO_JUMP') {
+    return { ok: false, reason: 'invalid_state', state: state };
+  }
+
+  var sheet = getSaveDataSheet();
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
+  saveSimTime(nowTick);
+
+  return { ok: true, ship: getPlayerShip() };
+}
+
+// Stubs for the future damage / misjump model. See
+// docs/discussions/jump-operations.md for the design.
+function calculateEmergencyJumpRisk_(ship, target, currentTick) {
+  // TODO: incorporate distance, drive maintenance, crew skill, etc.
+  return {
+    distance:        distanceLy_(getSystemById_(ship.systemId), target),
+    severityModel:  'placeholder',
+    rolledOutcome:  'nominal'
+  };
+}
+function resolveEmergencyJumpConsequences_(ship, risk) {
+  // TODO: apply drive damage / crew injuries / extended recharge.
+  // No-op for now; risk object is logged client-side as a warning.
 }
 
 // ==============================================================
