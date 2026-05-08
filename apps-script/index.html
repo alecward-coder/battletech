@@ -103,14 +103,15 @@
 </head>
 <body>
   <div id="header">
-    <h1>Phase 0 Starmap</h1>
+    <h1 id="viewTitle">Phase 0 Starmap</h1>
     <div>
       <span id="simClockLabel">TC/TST</span>
       <span id="simClock">--</span>
       <span id="systemCount"></span>
     </div>
     <div>
-      <button onclick="centerTerra()">Terra</button>
+      <button id="btn-back-galactic" onclick="exitSystemView()" style="display:none">← Back to starmap</button>
+      <button id="btn-terra" onclick="centerTerra()">Terra</button>
       <span id="zoom">100%</span>
     </div>
   </div>
@@ -728,6 +729,14 @@
     var drag = null;
     var canvas, ctx, width, height;
 
+    // [SYS-014] In-system view state
+    var currentView       = 'galactic';   // 'galactic' | 'system'
+    var systemViewData    = null;         // bundle from getStarSystemView
+    var systemViewLayout  = null;         // computed positions { entities, routes, byId }
+    var selectedEntity    = null;         // selected in system view
+    var hoveredEntity     = null;
+    var galacticState     = null;         // saved view + selected when entering system view
+
     google.script.run.withSuccessHandler(function(data) {
       systems = data;
       draw();
@@ -791,8 +800,363 @@
       return null;
     }
 
+    // ─────────────────────────────────────────────
+    // SYS-014 — In-system view: enter / exit / layout / draw
+    // ─────────────────────────────────────────────
+    var SYS_BAND_R    = { inner: 110, habitable: 230, outer: 440, deep_outer: 740 };
+    var SYS_JP_R      = 950;
+    var SYS_MOON_R    = 28;
+    var SYS_FAC_OFF   = 22;
+
+    function enterSystemView(systemId) {
+      var sysEntry = null;
+      for (var i = 0; i < systems.length; i++) {
+        if (Number(systems[i].id) === Number(systemId)) { sysEntry = systems[i]; break; }
+      }
+      if (!sysEntry) return;
+      if (!sysEntry.hasSystemView) {
+        alert('No in-system data for ' + sysEntry.name + ' yet.');
+        return;
+      }
+      // Save galactic state to restore on exit
+      galacticState = {
+        view:     { x: view.x, y: view.y, scale: view.scale },
+        selected: selected,
+        hovered:  hovered
+      };
+      google.script.run
+        .withSuccessHandler(function(bundle) {
+          if (!bundle || !bundle.system) {
+            alert('Failed to load system data for ' + sysEntry.name + '.');
+            galacticState = null;
+            return;
+          }
+          systemViewData   = bundle;
+          systemViewLayout = computeSystemLayout_(bundle);
+          currentView      = 'system';
+          selectedEntity   = null;
+          hoveredEntity    = null;
+          // Reset view to fit the whole system
+          view = { x: 0, y: 0, scale: 0.5 };
+          // UI chrome
+          document.getElementById('viewTitle').textContent =
+            (bundle.system.system_name || sysEntry.name) + ' — System View';
+          document.getElementById('btn-back-galactic').style.display = '';
+          document.getElementById('btn-terra').style.display = 'none';
+          updatePanel();
+          draw();
+        })
+        .withFailureHandler(function(err) {
+          alert('System view error: ' + (err && err.message ? err.message : err));
+          galacticState = null;
+        })
+        .getStarSystemView(sysEntry.id);
+    }
+
+    function exitSystemView() {
+      currentView      = 'galactic';
+      systemViewData   = null;
+      systemViewLayout = null;
+      selectedEntity   = null;
+      hoveredEntity    = null;
+      if (galacticState) {
+        view     = galacticState.view;
+        selected = galacticState.selected;
+        hovered  = galacticState.hovered;
+        galacticState = null;
+      }
+      document.getElementById('viewTitle').textContent = 'Phase 0 Starmap';
+      document.getElementById('btn-back-galactic').style.display = 'none';
+      document.getElementById('btn-terra').style.display = '';
+      updatePanel();
+      draw();
+    }
+
+    function computeSystemLayout_(data) {
+      var entities = [];
+      var byId     = {};
+
+      // Locate the star
+      var starBody = null;
+      for (var i = 0; i < data.bodies.length; i++) {
+        if (data.bodies[i].body_type === 'star') { starBody = data.bodies[i]; break; }
+      }
+
+      // 1. Star at center
+      var starEnt = {
+        kind: 'star',
+        id:   starBody ? starBody.body_id : 'star',
+        name: starBody ? starBody.body_name : (data.system.primary_star_name || data.system.system_name),
+        x: 0, y: 0,
+        raw: starBody || {}
+      };
+      entities.push(starEnt);
+      if (starBody) byId[starBody.body_id] = starEnt;
+
+      // 2. Bodies orbiting the star, grouped by band
+      var byBand = { inner: [], habitable: [], outer: [], deep_outer: [] };
+      for (var i = 0; i < data.bodies.length; i++) {
+        var b = data.bodies[i];
+        if (b.body_type === 'star') continue;
+        if (!starBody || b.orbit_parent_id !== starBody.body_id) continue;
+        var band = b.orbit_band && byBand[b.orbit_band] !== undefined ? b.orbit_band : 'outer';
+        byBand[band].push(b);
+      }
+      for (var bandName in byBand) {
+        var arr = byBand[bandName];
+        arr.sort(function(a, b) { return Number(a.orbit_order || 0) - Number(b.orbit_order || 0); });
+        var R = SYS_BAND_R[bandName] || 500;
+        for (var k = 0; k < arr.length; k++) {
+          var b   = arr[k];
+          var ang = (2 * Math.PI * k) / Math.max(arr.length, 1) - Math.PI / 2;
+          var ent = {
+            kind: (b.body_type === 'asteroid_belt') ? 'asteroid_belt' : 'planet',
+            id:   b.body_id, name: b.body_name,
+            x:    R * Math.cos(ang), y: R * Math.sin(ang),
+            ringRadius: R,
+            raw: b
+          };
+          entities.push(ent);
+          byId[b.body_id] = ent;
+        }
+      }
+
+      // 3. Moons clustered around their parent planet
+      var moonsByParent = {};
+      for (var i = 0; i < data.bodies.length; i++) {
+        var b = data.bodies[i];
+        if (b.body_type !== 'moon') continue;
+        if (!moonsByParent[b.orbit_parent_id]) moonsByParent[b.orbit_parent_id] = [];
+        moonsByParent[b.orbit_parent_id].push(b);
+      }
+      for (var pid in moonsByParent) {
+        var parent = byId[pid];
+        if (!parent) continue;
+        var siblings = moonsByParent[pid];
+        siblings.sort(function(a, b) { return Number(a.orbit_order || 0) - Number(b.orbit_order || 0); });
+        for (var i = 0; i < siblings.length; i++) {
+          var m   = siblings[i];
+          var ang = (2 * Math.PI * i) / Math.max(siblings.length, 1);
+          var ent = {
+            kind: 'moon', id: m.body_id, name: m.body_name,
+            x: parent.x + SYS_MOON_R * Math.cos(ang),
+            y: parent.y + SYS_MOON_R * Math.sin(ang),
+            raw: m
+          };
+          entities.push(ent);
+          byId[m.body_id] = ent;
+        }
+      }
+
+      // 4. Jump points
+      for (var i = 0; i < data.jumpPoints.length; i++) {
+        var jp = data.jumpPoints[i];
+        var x, y;
+        if (jp.jump_point_type === 'zenith') {
+          x = 0; y = SYS_JP_R;
+        } else if (jp.jump_point_type === 'nadir') {
+          x = 0; y = -SYS_JP_R;
+        } else if (jp.jump_point_type === 'pirate_point') {
+          var parent = byId[jp.associated_body_id];
+          if (parent) {
+            var pAng    = Math.atan2(parent.y, parent.x);
+            var pRadius = Math.sqrt(parent.x * parent.x + parent.y * parent.y);
+            x = (pRadius + 60) * Math.cos(pAng + 0.4);
+            y = (pRadius + 60) * Math.sin(pAng + 0.4);
+          } else {
+            x = SYS_JP_R * 0.7; y = SYS_JP_R * 0.7;
+          }
+        } else {
+          x = -SYS_JP_R; y = 0;   // generic / lagrange — left side
+        }
+        var ent = { kind: 'jump_point', id: jp.jump_point_id, name: jp.jump_point_name, x: x, y: y, raw: jp };
+        entities.push(ent);
+        byId[jp.jump_point_id] = ent;
+      }
+
+      // 5. Orbital infrastructure — offset from associated body, or near zenith if deep_space
+      for (var i = 0; i < data.infrastructure.length; i++) {
+        var f = data.infrastructure[i];
+        var parent = f.orbiting_body_id ? byId[f.orbiting_body_id] : null;
+        var x, y;
+        if (parent) {
+          var ang = (i * 0.7) + Math.PI / 4;   // semi-deterministic offset
+          x = parent.x + SYS_FAC_OFF * Math.cos(ang);
+          y = parent.y + SYS_FAC_OFF * Math.sin(ang);
+        } else {
+          // Deep-space facility: place near the default arrival point (zenith) if known
+          var zen = byId[data.system.default_arrival_point];
+          if (zen) { x = zen.x + 30; y = zen.y - 20; }
+          else     { x = 0; y = SYS_JP_R - 60; }
+        }
+        var ent = { kind: 'infrastructure', id: f.facility_id, name: f.facility_name, x: x, y: y, raw: f };
+        entities.push(ent);
+        byId[f.facility_id] = ent;
+      }
+
+      // 6. Routes resolved to screen-aware endpoints
+      var routes = [];
+      for (var i = 0; i < data.routes.length; i++) {
+        var r      = data.routes[i];
+        var origin = byId[r.origin_location_id];
+        var dest   = byId[r.destination_location_id];
+        if (!origin || !dest) continue;
+        routes.push({
+          id:  r.route_id,
+          x1:  origin.x, y1: origin.y,
+          x2:  dest.x,   y2: dest.y,
+          raw: r
+        });
+      }
+
+      return { entities: entities, routes: routes, byId: byId, star: starEnt };
+    }
+
+    function findEntityAt(sx, sy) {
+      if (!systemViewLayout) return null;
+      var w        = screenToWorld(sx, sy);
+      var hitR     = Math.max(8, 14 / view.scale);
+      var best     = null;
+      var bestDist = Infinity;
+      for (var i = 0; i < systemViewLayout.entities.length; i++) {
+        var e  = systemViewLayout.entities[i];
+        var dx = e.x - w.x, dy = e.y - w.y;
+        var d  = Math.sqrt(dx*dx + dy*dy);
+        if (d < hitR && d < bestDist) { best = e; bestDist = d; }
+      }
+      return best;
+    }
+
+    function drawSystemView_() {
+      if (!ctx || !systemViewLayout) return;
+
+      ctx.fillStyle = '#0a0a12';
+      ctx.fillRect(0, 0, width, height);
+
+      var center = worldToScreen(0, 0);
+
+      // Concentric ring guides (orbit bands)
+      ctx.strokeStyle = '#1a1a2e';
+      ctx.lineWidth   = 1;
+      var bandRadii = [SYS_BAND_R.inner, SYS_BAND_R.habitable, SYS_BAND_R.outer, SYS_BAND_R.deep_outer];
+      for (var i = 0; i < bandRadii.length; i++) {
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, bandRadii[i] * view.scale, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // Outer system boundary (jump-point ring)
+      ctx.strokeStyle = '#2a2a3e';
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, SYS_JP_R * view.scale, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Routes (under entities)
+      for (var i = 0; i < systemViewLayout.routes.length; i++) {
+        var r  = systemViewLayout.routes[i];
+        var p1 = worldToScreen(r.x1, r.y1);
+        var p2 = worldToScreen(r.x2, r.y2);
+        var isPirate = r.raw && (r.raw.route_type === 'pirate_point_to_target');
+        ctx.strokeStyle = isPirate ? 'rgba(255,80,80,0.25)' : 'rgba(120,120,200,0.18)';
+        ctx.lineWidth   = 1;
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+      }
+
+      // Entities
+      for (var i = 0; i < systemViewLayout.entities.length; i++) {
+        var e = systemViewLayout.entities[i];
+        var p = worldToScreen(e.x, e.y);
+        if (p.x < -50 || p.x > width + 50 || p.y < -50 || p.y > height + 50) continue;
+        var isSel = selectedEntity && selectedEntity.id === e.id;
+        var isHov = hoveredEntity && hoveredEntity.id === e.id;
+        drawEntity_(e, p, isSel, isHov);
+      }
+
+      // Player ship marker if currently in this system
+      if (ship && systemViewData &&
+          Number(ship.systemId) === Number(systemViewData.system.system_id)) {
+        var pibId  = systemViewData.system.primary_inhabited_body_id;
+        var pibEnt = pibId ? systemViewLayout.byId[pibId] : null;
+        if (pibEnt) {
+          var sp = worldToScreen(pibEnt.x + 16, pibEnt.y + 16);
+          ctx.fillStyle = '#f0a';
+          ctx.beginPath(); ctx.arc(sp.x, sp.y, 4, 0, Math.PI * 2); ctx.fill();
+          ctx.font = '10px monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText('YOU', sp.x + 6, sp.y + 4);
+        }
+      }
+
+      document.getElementById('zoom').textContent = Math.round(view.scale * 100) + '%';
+    }
+
+    function drawEntity_(e, p, isSel, isHov) {
+      var color, radius, shape;
+      switch (e.kind) {
+        case 'star':
+          color = '#fc0'; radius = 12; shape = 'circle'; break;
+        case 'planet':
+          if (e.raw.is_inhabited === true || String(e.raw.is_inhabited).toUpperCase() === 'TRUE') color = '#0fa';
+          else if (e.raw.habitability_class === 'gas_giant' || e.raw.habitability_class === 'ice_giant') color = '#a87';
+          else color = '#789';
+          radius = 6; shape = 'circle'; break;
+        case 'asteroid_belt':
+          color = '#666'; radius = 4; shape = 'circle'; break;
+        case 'moon':
+          color = '#888'; radius = 3; shape = 'circle'; break;
+        case 'jump_point':
+          color = (e.raw.is_pirate_point === true || String(e.raw.is_pirate_point).toUpperCase() === 'TRUE') ? '#f33' : '#0cf';
+          radius = 6; shape = 'triangle'; break;
+        case 'infrastructure':
+          color = '#fa0'; radius = 5; shape = 'square'; break;
+        default:
+          color = '#ccc'; radius = 4; shape = 'circle';
+      }
+
+      ctx.fillStyle = color;
+      var r = isSel ? radius * 1.4 : radius;
+      if (shape === 'circle') {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (shape === 'triangle') {
+        ctx.beginPath();
+        ctx.moveTo(p.x,     p.y - r);
+        ctx.lineTo(p.x - r, p.y + r * 0.8);
+        ctx.lineTo(p.x + r, p.y + r * 0.8);
+        ctx.closePath();
+        ctx.fill();
+      } else if (shape === 'square') {
+        ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+      }
+
+      if (isSel) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth   = 1.5;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, radius * 2.4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Labels: star + planets + jump points always; others on hover/select
+      var alwaysLabel = (e.kind === 'star' || e.kind === 'planet' || e.kind === 'jump_point');
+      if (isSel || isHov || alwaysLabel) {
+        ctx.fillStyle = isSel ? '#fff' : (isHov ? '#bbb' : '#888');
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(e.name, p.x, p.y - radius - 6);
+      }
+    }
+
     function draw() {
       if (!ctx) return;
+      if (currentView === 'system') {
+        drawSystemView_();
+        return;
+      }
+      // ─── galactic view follows ───
       ctx.fillStyle = '#0a0a12';
       ctx.fillRect(0, 0, width, height);
 
@@ -875,6 +1239,12 @@
     }
 
     function updatePanel() {
+      // [SYS-014] In system view, render the selected entity instead.
+      if (currentView === 'system') {
+        updateSystemEntityPanel_();
+        return;
+      }
+
       var actionsEl = document.getElementById('systemActions');
       if (!selected) {
         document.getElementById('systemName').textContent = '-';
@@ -969,11 +1339,123 @@
         addBtn('Recharging — ' + formatTicks(rechargeRemaining()),           'btn-prep', null, true);
       }
 
+      // [SYS-014] Drill into in-system view if data exists for this system.
+      if (selected.hasSystemView) {
+        var enterBtn = document.createElement('button');
+        enterBtn.textContent = 'Enter system view';
+        enterBtn.className   = 'btn-prep';
+        enterBtn.onclick     = function() { enterSystemView(selected.id); };
+        actionsEl.appendChild(enterBtn);
+      }
+
       // Always offer the dev "set as starting position" option.
       var setBtn = document.createElement('button');
       setBtn.textContent = 'Set as starting position';
       setBtn.onclick = setStartHere;
       actionsEl.appendChild(setBtn);
+    }
+
+    // ─────────────────────────────────────────────
+    // SYS-014 — Selected-entity panel (system view)
+    // ─────────────────────────────────────────────
+    function updateSystemEntityPanel_() {
+      var nameEl    = document.getElementById('systemName');
+      var infoEl    = document.getElementById('systemInfo');
+      var actionsEl = document.getElementById('systemActions');
+      actionsEl.innerHTML = '';
+
+      var sysHeader = systemViewData && systemViewData.system
+        ? systemViewData.system.system_name + ' system'
+        : '(system)';
+
+      if (!selectedEntity) {
+        nameEl.textContent = sysHeader;
+        infoEl.innerHTML   =
+          (systemViewData && systemViewData.system
+            ? 'Star: ' + (systemViewData.system.primary_star_name || '?') + '<br>' +
+              'Type: ' + (systemViewData.system.star_type || '?') + '<br>' +
+              'Bodies: '       + systemViewData.bodies.length         + '<br>' +
+              'Jump points: '  + systemViewData.jumpPoints.length     + '<br>' +
+              'Infrastructure: ' + systemViewData.infrastructure.length + '<br>' +
+              'Routes: '       + systemViewData.routes.length
+            : '(loading)');
+        return;
+      }
+
+      var e = selectedEntity, raw = e.raw || {};
+      nameEl.textContent = e.name + '  (' + e.kind.replace('_', ' ') + ')';
+
+      var lines = [];
+      function row(label, val) {
+        if (val === undefined || val === null || val === '') return;
+        lines.push(label + ': ' + escapeHtml(String(val)));
+      }
+
+      switch (e.kind) {
+        case 'star':
+          row('Type',          raw.body_type);
+          row('Canonical',     raw.canonical_status);
+          row('Source',        raw.source_note);
+          break;
+        case 'planet':
+        case 'asteroid_belt':
+          row('Designation',   raw.scientific_name);
+          row('Type',          raw.body_type);
+          row('Orbit band',    raw.orbit_band);
+          row('Inhabited',     raw.is_inhabited === true || String(raw.is_inhabited).toUpperCase() === 'TRUE' ? 'yes' : 'no');
+          row('Population',    raw.population_level);
+          row('Habitability',  raw.habitability_class);
+          row('Atmosphere',    raw.atmosphere_type);
+          row('Gravity',       raw.gravity_level);
+          row('Water',         raw.water_presence);
+          row('Industrial',    raw.industrial_value);
+          row('Military',      raw.military_value);
+          row('Owner',         raw.political_owner);
+          row('Canonical',     raw.canonical_status);
+          row('Source',        raw.source_note);
+          row('Notes',         raw.notes);
+          break;
+        case 'moon':
+          row('Designation',   raw.scientific_name);
+          row('Parent',        raw.orbit_parent_id);
+          row('Inhabited',     raw.is_inhabited === true || String(raw.is_inhabited).toUpperCase() === 'TRUE' ? 'yes' : 'no');
+          row('Population',    raw.population_level);
+          row('Industrial',    raw.industrial_value);
+          row('Military',      raw.military_value);
+          row('Canonical',     raw.canonical_status);
+          row('Source',        raw.source_note);
+          row('Notes',         raw.notes);
+          break;
+        case 'jump_point':
+          row('Type',          raw.jump_point_type);
+          row('Standard',      raw.is_standard === true || String(raw.is_standard).toUpperCase() === 'TRUE' ? 'yes' : 'no');
+          row('Pirate',        raw.is_pirate_point === true || String(raw.is_pirate_point).toUpperCase() === 'TRUE' ? 'yes' : 'no');
+          row('Known',         raw.is_known === true || String(raw.is_known).toUpperCase() === 'TRUE' ? 'yes' : 'no');
+          row('Risk',          raw.risk_level);
+          row('Recharge qual', raw.recharge_quality);
+          row('Distance',      raw.distance_from_primary_world);
+          row('Canonical',     raw.canonical_status);
+          row('Notes',         raw.notes);
+          break;
+        case 'infrastructure':
+          row('Type',          raw.facility_type);
+          row('Owner',         raw.owner);
+          row('Operator',      raw.operator);
+          row('Status',        raw.operational_status);
+          row('Security',      raw.security_level);
+          row('Traffic',       raw.traffic_level);
+          row('Repair',        raw.repair_capacity);
+          row('Dock',          raw.dock_capacity);
+          row('Shipyard',      raw.shipyard_capacity);
+          row('Military',      raw.military_presence);
+          row('HPG-capable',   raw.hpg_capable === true || String(raw.hpg_capable).toUpperCase() === 'TRUE' ? 'yes' : 'no');
+          row('Canonical',     raw.canonical_status);
+          row('Notes',         raw.notes);
+          break;
+        default:
+          row('Kind',          e.kind);
+      }
+      infoEl.innerHTML = lines.join('<br>');
     }
 
     function getMousePos(e) {
@@ -994,6 +1476,9 @@
         view.x = drag.vx + dx;
         view.y = drag.vy - dy;
         draw();
+      } else if (currentView === 'system') {
+        hoveredEntity = findEntityAt(pos.x, pos.y);
+        draw();
       } else {
         hovered = findSystemAt(pos.x, pos.y);
         draw();
@@ -1005,6 +1490,12 @@
     function onClick(e) {
       if (drag) return;
       var pos = getMousePos(e);
+      if (currentView === 'system') {
+        selectedEntity = findEntityAt(pos.x, pos.y);
+        updatePanel();
+        draw();
+        return;
+      }
       selected = findSystemAt(pos.x, pos.y);
       updatePanel();
       draw();
@@ -1012,13 +1503,30 @@
 
     function onDblClick(e) {
       var pos = getMousePos(e);
+      if (currentView === 'system') {
+        // Double-click recenters camera on entity in system view.
+        var ent = findEntityAt(pos.x, pos.y);
+        if (ent) {
+          view.x = -ent.x;
+          view.y = -ent.y;
+          selectedEntity = ent;
+          updatePanel();
+          draw();
+        }
+        return;
+      }
       var s = findSystemAt(pos.x, pos.y);
       if (s) {
         view.x = -s.x;
         view.y = -s.y;
         selected = s;
         updatePanel();
-        draw();
+        // Enter system view automatically if data exists.
+        if (s.hasSystemView) {
+          enterSystemView(s.id);
+        } else {
+          draw();
+        }
       }
     }
 
