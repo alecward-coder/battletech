@@ -1,0 +1,7 @@
+# clasp runs from this directory (rootDir=.), so paths are relative to apps-script/.
+# Allow only the source files clasp should push to the Apps Script project.
+**/**
+!*.gs
+!*.js
+!*.html
+!appsscript.json

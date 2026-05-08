@@ -1,0 +1,34 @@
+name: Deploy apps-script
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps-script/**'
+      - '.github/workflows/deploy-apps-script.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install clasp
+        run: npm install -g @google/clasp
+
+      - name: Write ~/.clasprc.json
+        run: |
+          printf '%s' '${{ secrets.CLASPRC_JSON }}' > ~/.clasprc.json
+          # Sanity: ensure it's valid JSON before clasp tries to use it.
+          node -e "JSON.parse(require('fs').readFileSync(process.env.HOME + '/.clasprc.json','utf8'))"
+
+      - name: Push and deploy
+        working-directory: apps-script
+        run: |
+          clasp push --force
+          clasp deploy -i "AKfycbzdamWe2nQMByg7i-SzTTed1Ia3M2odED21DUsvsgvvBg1RU6hBW1D1DB2kE6uwXQUL" -d "Auto-deploy from GitHub (${{ github.sha }})"

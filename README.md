@@ -32,17 +32,58 @@ Reactor Core Continuum.mp3   Starmap background audio
 
 The script ID above is already wired up in `.clasp.json`.
 
-## One-time setup
+## Deployment
+
+This repo uses GitHub Actions to deploy `apps-script/` to the live Apps
+Script project automatically. Workflow lives at
+[`.github/workflows/deploy-apps-script.yml`](.github/workflows/deploy-apps-script.yml).
+
+**On every push to `main` that touches `apps-script/**`:**
+1. The workflow installs `@google/clasp` on a Node 22 runner.
+2. Writes the `CLASPRC_JSON` GitHub secret (the `~/.clasprc.json` that
+   `clasp login` produces) to disk so clasp is authenticated.
+3. Runs `clasp push --force` to upload the local source to the Apps
+   Script project.
+4. Runs `clasp deploy -i "<deployment-id>" -d "Auto-deploy from
+   GitHub (<sha>)"` — pinned to the existing deployment so the
+   user-facing `/exec` URL stays stable.
+
+**One-time secret setup (browser-only — no local CLI needed):**
+- The `CLASPRC_JSON` token is reusable across repos. If you already
+  have it set on another repo (e.g. wsrca), copy that secret value
+  into this repo's settings:
+  github.com/alecward-coder/battletech → Settings → Secrets and
+  variables → Actions → New repository secret → name
+  `CLASPRC_JSON`, value = your existing token.
+- Once the secret is in place, the next push to `main` that touches
+  `apps-script/` triggers an auto-deploy.
+
+**Manual run:** the workflow also supports `workflow_dispatch` — you
+can trigger a deploy from the Actions tab without a code change.
+
+### Deployment-ID pinning
+
+`clasp deploy -i <id>` pins the deploy to a specific deployment so
+the `/exec` URL never changes. Without `-i`, every run would create a
+new deployment with a fresh URL and users would hit the old one
+forever.
+
+The deployment ID currently pinned in the workflow:
+`AKfycbzdamWe2nQMByg7i-SzTTed1Ia3M2odED21DUsvsgvvBg1RU6hBW1D1DB2kE6uwXQUL`.
+
+To find / replace it: Apps Script editor → Deploy → Manage
+deployments → copy the deployment ID of the row you want to pin to.
+
+## Local commands (optional)
+
+If you do happen to use clasp locally:
 
 ```sh
 npm install
-npx clasp login        # opens a browser for Google OAuth
-npm run pull           # writes Apps Script source into apps-script/
-git add apps-script/
-git commit -m "Pull Apps Script source"
+npx clasp login
+npm run pull   # = cd apps-script && clasp pull
+npm run push   # = cd apps-script && clasp push --force
 ```
-
-## Day-to-day
 
 | Command | What it does |
 |---|---|
@@ -52,9 +93,6 @@ git commit -m "Pull Apps Script source"
 | `npm run open` | Open the Apps Script editor in a browser |
 | `npm run open:sheet` | Open the live game spreadsheet |
 | `npm run logs` | Tail the Apps Script execution logs |
-
-Edit either in the Apps Script editor or in your local IDE — just remember to
-`pull` before editing locally and `push` after.
 
 ## Refreshing the seed data
 

@@ -4,12 +4,12 @@
   "private": true,
   "description": "BattleTech NPC sim — Google Apps Script project + spreadsheet schema, mirrored to GitHub.",
   "scripts": {
-    "pull": "clasp pull",
-    "push": "clasp push",
-    "deploy": "clasp deploy",
-    "open": "clasp open",
+    "pull": "cd apps-script && clasp pull",
+    "push": "cd apps-script && clasp push --force",
+    "deploy": "cd apps-script && clasp deploy",
+    "open": "cd apps-script && clasp open",
     "open:sheet": "open https://docs.google.com/spreadsheets/d/1nr-9ln8iWfK_ajDYpi7csVOfvfJKy_5IUxUrgB7EfD4/edit",
-    "logs": "clasp logs"
+    "logs": "cd apps-script && clasp logs"
   },
   "devDependencies": {
     "@google/clasp": "^2.4.2"
