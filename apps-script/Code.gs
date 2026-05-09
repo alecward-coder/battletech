@@ -225,6 +225,20 @@ function getPlayerShip() {
                                     defaultLocId);
   var locationKind = ensureSaveRow_(sheet, 'PLAYER_SHIP_LOCATION_KIND',
                                     _locationKind_(locationId));
+
+  // Defensive backfill: heal any save where the location row exists
+  // but is empty (e.g. from an earlier jump to an unseeded system
+  // where default_arrival_point wasn't set). Per canon, every system
+  // has a standard zenith jump point, so synthesize one as the
+  // fallback.
+  if (!locationId || locationId === '') {
+    locationId = _systemDefaultArrival_(systemId) || '';
+    if (locationId) writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_ID', locationId);
+  }
+  if (!locationKind || locationKind === '') {
+    locationKind = _locationKind_(locationId);
+    if (locationKind) writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_KIND', locationKind);
+  }
   var transitTarget = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
   var transitKind   = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
   var transitEnd    = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
@@ -270,17 +284,29 @@ function _systemPrimaryInhabitedBody_(systemId) {
 
 function _systemDefaultArrival_(systemId) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Systems');
-  if (!sheet) return null;
+  if (!sheet) return _syntheticZenithId_(systemId);
   var data = sheet.getDataRange().getValues();
-  if (data.length < 2) return null;
+  if (data.length < 2) return _syntheticZenithId_(systemId);
   var col = data[0].indexOf('default_arrival_point');
-  if (col === -1) return null;
+  if (col === -1) return _syntheticZenithId_(systemId);
   for (var i = 1; i < data.length; i++) {
     if (Number(data[i][0]) === Number(systemId)) {
-      return data[i][col] || null;
+      var v = data[i][col];
+      return (v && v !== '') ? v : _syntheticZenithId_(systemId);
     }
   }
-  return null;
+  return _syntheticZenithId_(systemId);
+}
+
+/**
+ * Per canon every star system has standard zenith/nadir jump points
+ * regardless of whether they're explicitly seeded in Jump_Points.
+ * For unseeded systems, synthesize a stable id so the player ship
+ * always has a jump-point location to be "at" after a jump.
+ */
+function _syntheticZenithId_(systemId) {
+  if (!systemId) return '';
+  return String(systemId) + '-jp-zenith';
 }
 
 function _locationKind_(locationId) {

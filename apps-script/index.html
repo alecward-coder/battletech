@@ -713,14 +713,15 @@
     }
 
     // Resolve a location ID to a friendly name. Looks at the loaded
-    // systemViewLayout if we're currently viewing the system; otherwise
-    // returns the raw ID as a fallback.
+    // systemViewLayout if we're currently viewing the system; falls
+    // back to a canon-friendly label for synthetic jump-point ids
+    // (every system has standard zenith / nadir per canon, even
+    // when not explicitly seeded).
     function inSystemLocationName_(locId) {
       if (!locId) return '';
       if (systemViewLayout && systemViewLayout.byId && systemViewLayout.byId[locId]) {
         return systemViewLayout.byId[locId].name;
       }
-      // Try the current system bundle if it's loaded.
       if (systemViewData) {
         var pools = [systemViewData.bodies || [], systemViewData.jumpPoints || [], systemViewData.infrastructure || []];
         for (var p = 0; p < pools.length; p++) {
@@ -731,6 +732,11 @@
           }
         }
       }
+      // Friendly fallback for synthetic jump-point ids
+      var s = String(locId);
+      if (/-jp-zenith$/.test(s)) return 'Standard Zenith Jump Point';
+      if (/-jp-nadir$/.test(s))  return 'Standard Nadir Jump Point';
+      if (s.indexOf('-jp-') !== -1) return 'Jump Point';
       return locId;
     }
 
