@@ -1665,11 +1665,38 @@
       var bestDist = Infinity;
       for (var i = 0; i < systemViewLayout.entities.length; i++) {
         var e  = systemViewLayout.entities[i];
+        if (!isHeliocentricEntity_(e)) continue;
         var dx = e.x - w.x, dy = e.y - w.y;
         var d  = Math.sqrt(dx*dx + dy*dy);
         if (d < hitR && d < bestDist) { best = e; bestDist = d; }
       }
       return best;
+    }
+
+    // True if `e` belongs in the heliocentric system view. Moons and anything
+    // attached to a planet (pirate jump points, orbital infrastructure) live
+    // in that planet's orbital view instead.
+    function isHeliocentricEntity_(e) {
+      if (!e) return false;
+      if (e.kind === 'moon') return false;
+      if (e.parentRelative) return false;
+      return true;
+    }
+
+    // Walk up parent chains until we reach a heliocentric entity. Used to
+    // anchor the ship marker in system view when the ship is at a moon or
+    // station that lives in an orbital frame.
+    function heliocentricAncestor_(layout, ent) {
+      if (!layout || !ent) return null;
+      var safety = 8;
+      while (ent && !isHeliocentricEntity_(ent) && safety-- > 0) {
+        var pid = (ent.moonOrbit && ent.moonOrbit.parent) ||
+                  ent.parentId ||
+                  (ent.parentRelative && ent.parentRelative.parentId);
+        if (!pid) return null;
+        ent = layout.byId[pid];
+      }
+      return ent;
     }
 
     function drawSystemView_() {
@@ -1710,17 +1737,16 @@
       ctx.stroke();
 
       // Routes (under entities) — endpoints looked up live so orbital motion
-      // drags route lines along with their endpoints.
+      // drags route lines along with their endpoints. Routes that touch a
+      // sub-orbital entity (moon, pirate point on a planet, station on a
+      // planet) are hidden; they belong to that planet's orbital view.
       for (var i = 0; i < systemViewLayout.routes.length; i++) {
         var r  = systemViewLayout.routes[i];
         var o  = r.originId ? systemViewLayout.byId[r.originId] : null;
         var d  = r.destId   ? systemViewLayout.byId[r.destId]   : null;
-        var ox = o ? o.x : r.x1;
-        var oy = o ? o.y : r.y1;
-        var dx = d ? d.x : r.x2;
-        var dy = d ? d.y : r.y2;
-        var p1 = worldToScreen(ox, oy);
-        var p2 = worldToScreen(dx, dy);
+        if (!isHeliocentricEntity_(o) || !isHeliocentricEntity_(d)) continue;
+        var p1 = worldToScreen(o.x, o.y);
+        var p2 = worldToScreen(d.x, d.y);
         var isPirate = r.raw && (r.raw.route_type === 'pirate_point_to_target');
         ctx.strokeStyle = isPirate ? 'rgba(255,80,80,0.25)' : 'rgba(120,120,200,0.18)';
         ctx.lineWidth   = 1;
@@ -1730,9 +1756,12 @@
         ctx.stroke();
       }
 
-      // Entities
+      // Entities — heliocentric only. Sub-orbital things (moons, planet-
+      // attached pirate JPs, planet-orbit infrastructure) appear in the
+      // relevant planet's orbital view, not here.
       for (var i = 0; i < systemViewLayout.entities.length; i++) {
         var e = systemViewLayout.entities[i];
+        if (!isHeliocentricEntity_(e)) continue;
         var p = worldToScreen(e.x, e.y);
         if (p.x < -50 || p.x > width + 50 || p.y < -50 || p.y > height + 50) continue;
         var isSel = selectedEntity && selectedEntity.id === e.id;
@@ -1744,9 +1773,14 @@
       // dashed line + interpolated marker during transit.
       if (ship && systemViewData &&
           Number(ship.systemId) === Number(systemViewData.system.system_id)) {
-        var locEnt    = ship.locationId    ? systemViewLayout.byId[ship.locationId]    : null;
-        var targetEnt = (ship.transitState === 'TRANSITING' && ship.transitTargetId)
+        var rawLoc    = ship.locationId    ? systemViewLayout.byId[ship.locationId]    : null;
+        var rawTarget = (ship.transitState === 'TRANSITING' && ship.transitTargetId)
                           ? systemViewLayout.byId[ship.transitTargetId] : null;
+        // Anchor sub-orbital locations (moon, station, pirate JP) to their
+        // parent planet so the system view shows ship-near-Mars instead of
+        // ship-on-invisible-Phobos.
+        var locEnt    = heliocentricAncestor_(systemViewLayout, rawLoc);
+        var targetEnt = heliocentricAncestor_(systemViewLayout, rawTarget);
 
         if (targetEnt && locEnt) {
           // Draw transit path as a dashed line
