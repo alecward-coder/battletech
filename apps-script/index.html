@@ -1391,12 +1391,17 @@
       entities.push(centerEnt);
       byId[centerEnt.id] = centerEnt;
 
-      // Collect satellites of this body
+      // Collect satellites of this body. Defensive against spreadsheet
+      // string drift (case, padding) since the data round-trips through
+      // user-edited sheets.
       var sats = [];
+      var centerIdStr = String(centerId).trim();
       for (var i = 0; i < systemViewData.bodies.length; i++) {
         var b = systemViewData.bodies[i];
-        if (b.body_type !== 'moon') continue;
-        if (String(b.orbit_parent_id) !== String(centerId)) continue;
+        if (!b) continue;
+        var bt = String(b.body_type || '').trim().toLowerCase();
+        if (bt !== 'moon') continue;
+        if (String(b.orbit_parent_id || '').trim() !== centerIdStr) continue;
         sats.push(b);
       }
       sats.sort(function(a, b) { return Number(a.orbit_order || 0) - Number(b.orbit_order || 0); });
@@ -1446,8 +1451,9 @@
       var jpIdx = 0;
       for (var i = 0; i < systemViewData.jumpPoints.length; i++) {
         var jp = systemViewData.jumpPoints[i];
+        if (!jp) continue;
         if (jp.jump_point_type !== 'pirate_point') continue;
-        if (String(jp.associated_body_id) !== String(centerId)) continue;
+        if (String(jp.associated_body_id) !== centerIdStr) continue;
         var ang = jpIdx * jpAngStep + 0.4;
         var ent = {
           kind: 'jump_point',
@@ -1462,14 +1468,16 @@
         jpIdx++;
       }
 
-      // Orbital infrastructure attached to this body. Place at small
-      // semi-deterministic offsets just outside the body's surface — a
-      // tactical "near-orbit" cluster.
+      // Orbital infrastructure attached to this body. Surface facilities
+      // (location_type='surface') belong to a future planetary view and are
+      // skipped here. Off-surface stations cluster just outside the body.
       var infraR = Math.max(ORBITAL_BODY_MIN_PX * 4, scalePxPerAU * 0.0003);
       var infraIdx = 0;
       for (var i = 0; i < systemViewData.infrastructure.length; i++) {
         var f = systemViewData.infrastructure[i];
-        if (String(f.orbiting_body_id) !== String(centerId)) continue;
+        if (!f) continue;
+        if (String(f.orbiting_body_id) !== centerIdStr) continue;
+        if (String(f.location_type || '').toLowerCase() === 'surface') continue;
         var ang = infraIdx * 0.9 + 0.3;
         var ent = {
           kind: 'infrastructure',
@@ -1511,22 +1519,29 @@
 
     function bodyHasOrbitalContent_(bodyEntity) {
       if (!bodyEntity || !systemViewData) return false;
-      var id = bodyEntity.id;
+      var id = String(bodyEntity.id);
       // Has at least one moon
       for (var i = 0; i < systemViewData.bodies.length; i++) {
         var b = systemViewData.bodies[i];
-        if (b.body_type === 'moon' && String(b.orbit_parent_id) === String(id)) return true;
+        if (!b) continue;
+        var bt = String(b.body_type || '').toLowerCase();
+        if (bt !== 'moon') continue;
+        if (String(b.orbit_parent_id) === id) return true;
       }
-      // Or at least one piece of orbital infrastructure
+      // Or at least one piece of off-surface infrastructure attached here
       for (var i = 0; i < systemViewData.infrastructure.length; i++) {
         var f = systemViewData.infrastructure[i];
-        if (String(f.orbiting_body_id) === String(id)) return true;
+        if (!f) continue;
+        if (String(f.orbiting_body_id) !== id) continue;
+        if (String(f.location_type || '').toLowerCase() === 'surface') continue;
+        return true;
       }
       // Or a pirate / L-point JP attached to it
       for (var i = 0; i < systemViewData.jumpPoints.length; i++) {
         var jp = systemViewData.jumpPoints[i];
+        if (!jp) continue;
         if (jp.jump_point_type === 'pirate_point' &&
-            String(jp.associated_body_id) === String(id)) return true;
+            String(jp.associated_body_id) === id) return true;
       }
       return false;
     }
@@ -1535,6 +1550,17 @@
       if (!bodyEntity) return;
       var layout = computeOrbitalLayout_(bodyEntity);
       if (!layout) return;
+      var counts = { moons: 0, infra: 0, jp: 0 };
+      for (var ci = 0; ci < layout.entities.length; ci++) {
+        var ce = layout.entities[ci];
+        if (ce === layout.center) continue;
+        if (ce.kind === 'moon')           counts.moons++;
+        else if (ce.kind === 'infrastructure') counts.infra++;
+        else if (ce.kind === 'jump_point')     counts.jp++;
+      }
+      console.log('[orbital] entered', bodyEntity.name, 'id=', bodyEntity.id,
+        'moons=', counts.moons, 'infra=', counts.infra, 'jp=', counts.jp,
+        'scalePxPerAU=', layout.scalePxPerAU);
       systemViewState = { view: { x: view.x, y: view.y, scale: view.scale }, selectedEntity: selectedEntity };
       orbitalLayout = layout;
       currentView   = 'orbital';
