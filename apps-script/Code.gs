@@ -335,12 +335,17 @@ function _findRoute_(systemId, originId, destId) {
 
 /**
  * Begin transit from the ship's current location to targetLocationId.
- * Validates: not already transiting, no jump prep active, route exists.
+ * Free travel: any in-system location is allowed. Time resolution
+ * priority:
+ *   1. hoursOverride if provided by the client (>0).
+ *   2. In_System_Routes row matching origin <-> target (canonical
+ *      lane time).
+ *   3. Flat 120-hour (5-day) default for unrouted travel.
  *
- * Returns { ok, ship, routeId, transitTicks } or
+ * Returns { ok, ship, routeId|null, transitTicks } or
  *         { ok:false, reason, ... }.
  */
-function beginInSystemTransit(targetLocationId, currentTick) {
+function beginInSystemTransit(targetLocationId, currentTick, hoursOverride) {
   var nowTick = Number(currentTick);
   var ship    = getPlayerShip();
 
@@ -358,14 +363,17 @@ function beginInSystemTransit(targetLocationId, currentTick) {
   }
 
   var route = _findRoute_(ship.systemId, ship.locationId, targetLocationId);
-  if (!route) {
-    return { ok: false, reason: 'no_route', origin: ship.locationId, target: targetLocationId };
+  var hours = 0;
+  if (hoursOverride && Number(hoursOverride) > 0) {
+    hours = Number(hoursOverride);
+  } else if (route) {
+    hours = Number(route.estimated_travel_time_hours) ||
+            (Number(route.estimated_travel_time_days || 0) * 24);
   }
+  if (hours <= 0) hours = 120;       // 5-day fallback for unrouted travel
+  if (hours <  1) hours = 1;         // sanity floor
 
-  var hours = Number(route.estimated_travel_time_hours) ||
-              (Number(route.estimated_travel_time_days || 0) * 24);
   var transitTicks = Math.round(hours * TICKS_PER_HOUR_SRV);
-  if (transitTicks <= 0) transitTicks = TICKS_PER_HOUR_SRV;  // floor 1 hour
 
   var sheet = getSaveDataSheet();
   writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', targetLocationId);
@@ -376,7 +384,7 @@ function beginInSystemTransit(targetLocationId, currentTick) {
   return {
     ok: true,
     ship: getPlayerShip(),
-    routeId: route.route_id,
+    routeId: route ? route.route_id : null,
     transitTicks: transitTicks
   };
 }
