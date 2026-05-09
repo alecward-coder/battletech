@@ -1944,6 +1944,16 @@
     var ZOOM_IMPULSE = 0.08;
     var ZOOM_DECAY   = 0.88;
     var ZOOM_EPS     = 0.001;
+    // Galactic view spans hundreds of light-years per pixel at default scale,
+    // so dense regions need very deep zoom before the "only one revealed
+    // system on canvas" auto-enter rule can be satisfied. System view is much
+    // smaller-grained and 20× is plenty there.
+    var ZOOM_MIN              = 0.05;
+    var ZOOM_MAX_GALACTIC     = 500;
+    var ZOOM_MAX_SYSTEM       = 20;
+    function currentZoomMax_() {
+      return currentView === 'system' ? ZOOM_MAX_SYSTEM : ZOOM_MAX_GALACTIC;
+    }
 
     function onWheel(e) {
       e.preventDefault();
@@ -1964,12 +1974,13 @@
         return;
       }
 
+      var zMax = currentZoomMax_();
       view.scale *= Math.exp(zoomVelocity);
-      view.scale = Math.max(0.05, Math.min(20, view.scale));
+      view.scale = Math.max(ZOOM_MIN, Math.min(zMax, view.scale));
 
       // Kill any leftover velocity once we hit a clamp boundary.
-      if (view.scale >= 20    && zoomVelocity > 0) zoomVelocity = 0;
-      if (view.scale <= 0.05  && zoomVelocity < 0) zoomVelocity = 0;
+      if (view.scale >= zMax     && zoomVelocity > 0) zoomVelocity = 0;
+      if (view.scale <= ZOOM_MIN && zoomVelocity < 0) zoomVelocity = 0;
 
       zoomVelocity *= ZOOM_DECAY;
 
