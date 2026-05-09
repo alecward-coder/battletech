@@ -1391,18 +1391,31 @@
       entities.push(centerEnt);
       byId[centerEnt.id] = centerEnt;
 
-      // Collect satellites of this body. Defensive against spreadsheet
-      // string drift (case, padding) since the data round-trips through
-      // user-edited sheets.
+      // Collect satellites of this body. Source them from the system layout's
+      // already-built moon entities — those have a known-good parent match
+      // (the system view rendered them correctly before we hid moons in
+      // heliocentric view) and carry the resolved moonOrbit reference.
       var sats = [];
       var centerIdStr = String(centerId).trim();
-      for (var i = 0; i < systemViewData.bodies.length; i++) {
-        var b = systemViewData.bodies[i];
-        if (!b) continue;
-        var bt = String(b.body_type || '').trim().toLowerCase();
-        if (bt !== 'moon') continue;
-        if (String(b.orbit_parent_id || '').trim() !== centerIdStr) continue;
-        sats.push(b);
+      if (systemViewLayout && systemViewLayout.entities) {
+        for (var i = 0; i < systemViewLayout.entities.length; i++) {
+          var se = systemViewLayout.entities[i];
+          if (!se || se.kind !== 'moon') continue;
+          if (String(se.parentId || '').trim() !== centerIdStr) continue;
+          sats.push(se.raw || { body_id: se.id, body_name: se.name });
+        }
+      }
+      // Fallback: if no moon entities in the system layout, scan the bundle
+      // directly. This covers any edge case where the layout is incomplete.
+      if (sats.length === 0) {
+        for (var i = 0; i < systemViewData.bodies.length; i++) {
+          var b = systemViewData.bodies[i];
+          if (!b) continue;
+          var bt = String(b.body_type || '').trim().toLowerCase();
+          if (bt !== 'moon') continue;
+          if (String(b.orbit_parent_id || '').trim() !== centerIdStr) continue;
+          sats.push(b);
+        }
       }
       sats.sort(function(a, b) { return Number(a.orbit_order || 0) - Number(b.orbit_order || 0); });
 
@@ -1422,10 +1435,11 @@
       // Place satellites
       for (var i = 0; i < sats.length; i++) {
         var m   = sats[i];
-        var orb = SOL_MOON_ORBITS[m.body_id] || null;
+        var mid = String(m.body_id || '').trim();
+        var orb = SOL_MOON_ORBITS[mid] || null;
         var ent = {
           kind:      'moon',
-          id:        m.body_id,
+          id:        mid,
           name:      m.body_name,
           x: 0, y: 0,
           moonOrbit: orb,
