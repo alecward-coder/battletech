@@ -911,17 +911,17 @@
     var galacticState     = null;         // saved view + selected when entering system view
 
     // [SYS-014] Seamless zoom-driven view transitions
-    // At galactic zoom 950×, galacticSystemRadiusPx_ returns 475 px — the
-    // exact pixel radius of the zenith ring at the system-view's default
-    // 0.5× scale. The cross-fade triggers there so the visual handoff is
-    // diameter-matched: the dot you've been zooming into IS the zenith ring.
-    var GALACTIC_AUTO_ENTER_SCALE = 950;
+    // The cross-fade fires when the galactic dot reaches the same pixel
+    // radius the zenith ring has at default system-view scale (475 px).
+    // At GALACTIC_DOT_COEFF=2 that requires view.scale ≈ 237.5×.
     var SYSTEM_AUTO_EXIT_SCALE    = 0.15;
     var GALACTIC_RETURN_SCALE     = 4;
     var TRANSITION_FADE_MS        = 450;
+    var POST_ENTER_EXIT_LOCK_MS   = 700;  // suppress auto-exit briefly after entry
     var isTransitioningViews      = false;
     var transitionState           = null; // active fade animation, see beginGalacticToSystemTransition_
     var transitionRafId           = null;
+    var exitLockUntil             = 0;    // performance.now() timestamp; auto-exit blocked until then
 
     google.script.run.withSuccessHandler(function(data) {
       systems = data;
@@ -1502,12 +1502,14 @@
       document.getElementById('zoom').textContent = Math.round(view.scale * 100) + '%';
     }
 
+    var GALACTIC_DOT_COEFF        = 2;     // px per unit scale
+    var TRANSITION_TARGET_DOT_PX  = SYS_JP_R * 0.5; // 475 px = zenith ring at default sys scale
     function galacticSystemRadiusPx_() {
       // Pixel radius of a system dot in galactic view. Grows linearly with
       // zoom so deep zoom can bring the dot up to the diameter of the
       // system-view zenith ring (at default sys scale 0.5 that's 475 px).
       // Floor at 2 px so it's still visible at default zoom.
-      return Math.max(2, view.scale * 0.5);
+      return Math.max(2, view.scale * GALACTIC_DOT_COEFF);
     }
 
     function updatePanel() {
@@ -1957,7 +1959,7 @@
     // system on canvas" auto-enter rule can be satisfied. System view is much
     // smaller-grained and 20× is plenty there.
     var ZOOM_MIN              = 0.05;
-    var ZOOM_MAX_GALACTIC     = 2000;
+    var ZOOM_MAX_GALACTIC     = 500;
     var ZOOM_MAX_SYSTEM       = 20;
     function currentZoomMax_() {
       return currentView === 'system' ? ZOOM_MAX_SYSTEM : ZOOM_MAX_GALACTIC;
@@ -2005,10 +2007,12 @@
     function tryAutoTransitionViews_() {
       if (isTransitioningViews) return false;
 
-      if (currentView === 'galactic' && view.scale > GALACTIC_AUTO_ENTER_SCALE) {
-        // Trigger only when a single revealed system is visible on the canvas
-        // (i.e. the user has zoomed in until that one system dominates the
-        // viewport). The candidate must also have in-system data.
+      if (currentView === 'galactic' &&
+          galacticSystemRadiusPx_() >= TRANSITION_TARGET_DOT_PX) {
+        // Trigger when the dot has grown to the zenith-ring diameter AND a
+        // single revealed system is on canvas. The dot-size requirement
+        // guarantees the post-fade sys scale is at least the system view's
+        // default 0.5×, so the system view doesn't enter compressed.
         var visible = [];
         for (var i = 0; i < systems.length; i++) {
           var s = systems[i];
@@ -2028,7 +2032,9 @@
         return true;
       }
 
-      if (currentView === 'system' && view.scale < SYSTEM_AUTO_EXIT_SCALE) {
+      if (currentView === 'system' &&
+          view.scale < SYSTEM_AUTO_EXIT_SCALE &&
+          performance.now() >= exitLockUntil) {
         isTransitioningViews = true;
         exitSystemView({ autoZoom: true });
         return true;
@@ -2158,6 +2164,7 @@
       document.getElementById('btn-terra').style.display = 'none';
 
       isTransitioningViews = false;
+      exitLockUntil = performance.now() + POST_ENTER_EXIT_LOCK_MS;
       zoomVelocity = t.savedVelocity || 0;
 
       updatePanel();
