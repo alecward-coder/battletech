@@ -886,10 +886,13 @@
     var galacticState     = null;         // saved view + selected when entering system view
 
     // [SYS-014] Seamless zoom-driven view transitions
-    var GALACTIC_AUTO_ENTER_SCALE = 6;    // zoom-in past this on starmap → drop into system view
+    var GALACTIC_AUTO_ENTER_SCALE = 8;    // minimum starmap zoom before auto-enter is even considered
     var SYSTEM_AUTO_EXIT_SCALE    = 0.15; // zoom-out past this in system view → pop to starmap
     var GALACTIC_RETURN_SCALE     = 4;    // post-exit starmap zoom (kept below auto-enter threshold)
+    var TRANSITION_FADE_MS        = 450;  // galactic↔system cross-fade length
     var isTransitioningViews      = false;
+    var transitionState           = null; // active fade animation, see beginGalacticToSystemTransition_
+    var transitionRafId           = null;
 
     google.script.run.withSuccessHandler(function(data) {
       systems = data;
@@ -1377,11 +1380,18 @@
 
     function draw() {
       if (!ctx) return;
+      if (transitionState) {
+        drawTransitionFrame_();
+        return;
+      }
       if (currentView === 'system') {
         drawSystemView_();
         return;
       }
-      // ─── galactic view follows ───
+      drawGalacticView_();
+    }
+
+    function drawGalacticView_() {
       ctx.fillStyle = '#0a0a12';
       ctx.fillRect(0, 0, width, height);
 
@@ -1417,7 +1427,7 @@
         ctx.stroke();
       }
 
-      var nr = Math.max(2, Math.min(4, view.scale * 8));
+      var nr = galacticSystemRadiusPx_();
       for (var i = 0; i < systems.length; i++) {
         var s = systems[i];
         if (!isSystemRevealed(s, simYear)) continue;
@@ -1461,6 +1471,10 @@
       }
 
       document.getElementById('zoom').textContent = Math.round(view.scale * 100) + '%';
+    }
+
+    function galacticSystemRadiusPx_() {
+      return Math.max(2, Math.min(4, view.scale * 8));
     }
 
     function updatePanel() {
@@ -1948,31 +1962,26 @@
       if (isTransitioningViews) return false;
 
       if (currentView === 'galactic' && view.scale > GALACTIC_AUTO_ENTER_SCALE) {
-        var center = screenToWorld(width / 2, height / 2);
-        var nearest = null;
-        var bestDist2 = Infinity;
+        // Trigger only when a single revealed system is visible on the canvas
+        // (i.e. the user has zoomed in until that one system dominates the
+        // viewport). The candidate must also have in-system data.
+        var visible = [];
         for (var i = 0; i < systems.length; i++) {
           var s = systems[i];
-          if (!s.hasSystemView) continue;
           if (!isSystemRevealed(s, simYear)) continue;
-          var dx = s.x - center.x;
-          var dy = s.y - center.y;
-          var d2 = dx * dx + dy * dy;
-          if (d2 < bestDist2) { bestDist2 = d2; nearest = s; }
-        }
-        if (nearest) {
-          // Require the candidate to be on-screen (within the visible canvas).
-          var p = worldToScreen(nearest.x, nearest.y);
-          var maxScreen = Math.min(width, height) * 0.5;
-          var pdx = p.x - width / 2;
-          var pdy = p.y - height / 2;
-          if (pdx * pdx + pdy * pdy <= maxScreen * maxScreen) {
-            isTransitioningViews = true;
-            enterSystemView(nearest.id);
-            return true;
+          var p = worldToScreen(s.x, s.y);
+          if (p.x >= 0 && p.x <= width && p.y >= 0 && p.y <= height) {
+            visible.push(s);
+            if (visible.length > 1) return false;
           }
         }
-        return false;
+        if (visible.length !== 1) return false;
+        var target = visible[0];
+        if (!target.hasSystemView) return false;
+
+        isTransitioningViews = true;
+        beginGalacticToSystemTransition_(target);
+        return true;
       }
 
       if (currentView === 'system' && view.scale < SYSTEM_AUTO_EXIT_SCALE) {
@@ -1982,6 +1991,137 @@
       }
 
       return false;
+    }
+
+    // Loads system-view data for `target`, then runs a cross-fade where the
+    // system's zenith ring lands at the same on-screen diameter the galactic
+    // dot occupied. Anchors the system around that screen position so the
+    // transition is purely a fade — no jump in the visual centroid.
+    function beginGalacticToSystemTransition_(target) {
+      var galView = { x: view.x, y: view.y, scale: view.scale };
+      var galPos  = worldToScreen(target.x, target.y);
+      var galDotR = galacticSystemRadiusPx_();
+      var savedVelocity = zoomVelocity;
+      zoomVelocity = 0;
+
+      // System view setup so zenith ring (SYS_JP_R world units) renders at
+      // exactly galDotR pixels, centered on galPos.
+      var sysScale = galDotR / SYS_JP_R;
+      var sysViewParams = {
+        x: (galPos.x - width / 2) / sysScale,
+        y: (height / 2 - galPos.y) / sysScale,
+        scale: sysScale
+      };
+
+      galacticState = {
+        view:     galView,
+        selected: selected,
+        hovered:  hovered
+      };
+
+      google.script.run
+        .withSuccessHandler(function(bundle) {
+          if (!bundle || !bundle.system) {
+            alert('Failed to load system data for ' + target.name + '.');
+            galacticState = null;
+            isTransitioningViews = false;
+            return;
+          }
+          transitionState = {
+            phase:        'galactic-to-system',
+            target:       target,
+            startTime:    performance.now(),
+            durationMs:   TRANSITION_FADE_MS,
+            galView:      galView,
+            sysView:      sysViewParams,
+            sysViewData:  bundle,
+            sysViewLayout: computeSystemLayout_(bundle),
+            savedVelocity: savedVelocity
+          };
+          if (transitionRafId === null) {
+            transitionRafId = requestAnimationFrame(drawTransitionFrame_);
+          }
+        })
+        .withFailureHandler(function(err) {
+          alert('System view error: ' + (err && err.message ? err.message : err));
+          galacticState = null;
+          isTransitioningViews = false;
+        })
+        .getStarSystemView(target.id);
+    }
+
+    function drawTransitionFrame_() {
+      transitionRafId = null;
+      var t = transitionState;
+      if (!t) return;
+
+      var now = performance.now();
+      var raw = Math.min(1, Math.max(0, (now - t.startTime) / t.durationMs));
+      // Smoothstep for an ease-in-ease-out feel.
+      var k = raw * raw * (3 - 2 * raw);
+
+      ctx.fillStyle = '#0a0a12';
+      ctx.fillRect(0, 0, width, height);
+
+      var savedView           = view;
+      var savedCurrentView    = currentView;
+      var savedSysViewData    = systemViewData;
+      var savedSysViewLayout  = systemViewLayout;
+
+      // Galactic layer
+      view           = t.galView;
+      currentView    = 'galactic';
+      systemViewData   = null;
+      systemViewLayout = null;
+      ctx.globalAlpha = 1 - k;
+      drawGalacticView_();
+
+      // System layer
+      view             = t.sysView;
+      currentView      = 'system';
+      systemViewData   = t.sysViewData;
+      systemViewLayout = t.sysViewLayout;
+      ctx.globalAlpha = k;
+      drawSystemView_();
+
+      ctx.globalAlpha   = 1;
+      view              = savedView;
+      currentView       = savedCurrentView;
+      systemViewData    = savedSysViewData;
+      systemViewLayout  = savedSysViewLayout;
+
+      if (raw >= 1) {
+        finishGalacticToSystemTransition_();
+        return;
+      }
+      transitionRafId = requestAnimationFrame(drawTransitionFrame_);
+    }
+
+    function finishGalacticToSystemTransition_() {
+      var t = transitionState;
+      transitionState = null;
+      if (!t) return;
+      systemViewData   = t.sysViewData;
+      systemViewLayout = t.sysViewLayout;
+      currentView      = 'system';
+      selectedEntity   = null;
+      hoveredEntity    = null;
+      view = { x: t.sysView.x, y: t.sysView.y, scale: t.sysView.scale };
+
+      document.getElementById('viewTitle').textContent =
+        (t.sysViewData.system.system_name || t.target.name) + ' — System View';
+      document.getElementById('btn-back-galactic').style.display = '';
+      document.getElementById('btn-terra').style.display = 'none';
+
+      isTransitioningViews = false;
+      zoomVelocity = t.savedVelocity || 0;
+
+      updatePanel();
+      draw();
+
+      if (Math.abs(zoomVelocity) > ZOOM_EPS && zoomRafId === null) {
+        zoomRafId = requestAnimationFrame(applyZoomMomentum_);
+      }
     }
 
     function centerTerra() {
