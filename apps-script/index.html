@@ -1178,17 +1178,14 @@
           var totalTicks  = Number(ship.transitEndTick) > 0
             ? Math.max(1, Number(ship.transitEndTick) - (simTick - 1))
             : 1;
-          var remaining   = Math.max(0, Number(ship.transitEndTick) - simTick);
-          // Use a 50% midpoint position when total can't be derived;
-          // otherwise interpolate properly using the route data if known.
-          var route = _findClientRoute_(ship.locationId, ship.transitTargetId);
-          var routeHours = route
-            ? (Number(route.estimated_travel_time_hours) ||
-               Number(route.estimated_travel_time_days || 0) * 24)
-            : 0;
-          var routeTicks = Math.round(routeHours * TICKS_PER_HOUR);
-          var frac = routeTicks > 0
-            ? Math.max(0, Math.min(1, 1 - (remaining / routeTicks)))
+          var remaining = Math.max(0, Number(ship.transitEndTick) - simTick);
+          // Total ticks: prefer the same estimate the panel used when
+          // the player started this transit (route time if defined;
+          // otherwise layout-distance estimate).
+          var totalH    = estimateTransitHoursClient_(ship.locationId, ship.transitTargetId);
+          var totalT    = Math.round(totalH * TICKS_PER_HOUR);
+          var frac      = totalT > 0
+            ? Math.max(0, Math.min(1, 1 - (remaining / totalT)))
             : 0.5;
 
           var ix = locEnt.x + (targetEnt.x - locEnt.x) * frac;
@@ -1630,19 +1627,39 @@
         return;
       }
 
-      // Look up a route from current ship.locationId to entity.id
-      var route = _findClientRoute_(ship.locationId, entity.id);
-      if (!route) {
-        addBtn('No direct route', 'btn-prep', null, true);
-        return;
-      }
-
-      var hours = Number(route.estimated_travel_time_hours) ||
-                  (Number(route.estimated_travel_time_days || 0) * 24);
+      // Free travel: any in-system location is reachable. Use the
+      // canonical route time when one exists, otherwise estimate
+      // from layout distance.
+      var hours = estimateTransitHoursClient_(ship.locationId, entity.id);
       var ticks = Math.round(hours * TICKS_PER_HOUR);
-      addBtn('Travel here · ' + formatTicks(ticks),
-             'btn-prep',
-             function() { beginInSystemTransitAction_(entity.id); });
+      var route = _findClientRoute_(ship.locationId, entity.id);
+      var label = 'Travel here · ' + formatTicks(ticks) + (route ? '' : ' (est.)');
+      addBtn(label, 'btn-prep',
+             function() { beginInSystemTransitAction_(entity.id, hours); });
+    }
+
+    // Hours estimate: route table > layout-distance heuristic > flat
+    // 5-day fallback. Distance scale tuned so Terra ↔ Sol Zenith
+    // (no direct route would still need ~7 days canonically) lands
+    // close to the route value.
+    function estimateTransitHoursClient_(originId, targetId) {
+      var route = _findClientRoute_(originId, targetId);
+      if (route) {
+        var rh = Number(route.estimated_travel_time_hours) ||
+                 (Number(route.estimated_travel_time_days || 0) * 24);
+        if (rh > 0) return rh;
+      }
+      if (systemViewLayout && systemViewLayout.byId) {
+        var a = systemViewLayout.byId[originId];
+        var b = systemViewLayout.byId[targetId];
+        if (a && b) {
+          var dx = a.x - b.x, dy = a.y - b.y;
+          var dist = Math.sqrt(dx * dx + dy * dy);
+          // 0.25 hours per layout unit; floor 6 hours for short hops.
+          return Math.max(6, Math.round(dist * 0.25));
+        }
+      }
+      return 120;   // 5-day fallback
     }
 
     function _findClientRoute_(originId, destId) {
@@ -1659,7 +1676,7 @@
       return null;
     }
 
-    function beginInSystemTransitAction_(targetLocationId) {
+    function beginInSystemTransitAction_(targetLocationId, hoursOverride) {
       if (!ship) return;
       google.script.run
         .withSuccessHandler(function(result) {
@@ -1678,7 +1695,7 @@
           alert('Transit error: ' + err.message);
           updatePanel();
         })
-        .beginInSystemTransit(targetLocationId, simTick);
+        .beginInSystemTransit(targetLocationId, simTick, hoursOverride || 0);
     }
 
     function abortInSystemTransit_() {
