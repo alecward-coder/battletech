@@ -7,6 +7,14 @@
     #container { display: flex; flex: 1; }
     #canvasWrap { flex: 1; position: relative; }
     #canvas { display: block; cursor: crosshair; }
+    /* SYS-013 jump visual overlay (translation flash) */
+    #jumpOverlay {
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      background: #0a0a30;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 50;
+    }
     #panel { width: 200px; background: #12121a; border-left: 1px solid #333; padding: 12px; overflow-y: auto; }
     #panel h2 { font-size: 11px; color: #666; margin-bottom: 8px; }
     #shipCurrent { color: #f0a; font-size: 14px; font-weight: bold; }
@@ -127,6 +135,7 @@
   <div id="container">
     <div id="canvasWrap">
       <canvas id="canvas"></canvas>
+      <div id="jumpOverlay"></div>
     </div>
     <div id="panel">
       <h2>SHIP STATUS</h2>
@@ -406,6 +415,10 @@
       JUMP_PREP_HALFWAY:        'Jump preparation is underway. Navigation and engineering teams continue final checks.',
       JUMP_PREP_COMPLETE:       'Jump prep complete. Awaiting command authorization.',
       JUMP_COMMIT:              'Command authorization received. Initiating jump sequence.',
+      JUMP_HUM_DEEPENS:         'K-F core hum deepens — felt more than heard. Bridge lighting dims. Static prickles along the hull.',
+      JUMP_STARS_SMEAR:         'Stars smear and fold across the viewport. Inner-ear pressure spikes. Brace.',
+      JUMP_FLASH_AND_SNAP:      'White flash. Snap through the hull. Viewport dark.',
+      JUMP_NEW_STARFIELD:       'Different stars. Position lock acquired. Solar sail redeploying.',
       JUMP_ARRIVAL:             'Jump complete. Confirming position and shipwide status.',
       EMERGENCY_JUMP_INITIATED: 'Emergency jump authorized. Brace for immediate transition.',
       DRIVE_RECHARGE_STARTED:   'K-F drive recharge cycle initiated.',
@@ -462,6 +475,64 @@
       return String(s).replace(/[&<>"']/g, function(c) {
         return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c];
       });
+    }
+
+    // ─────────────────────────────────────────────
+    // SYS-013 — Translation effect: visual overlay + chained beats
+    // (per docs/discussions/jump-operations.md §2)
+    // ─────────────────────────────────────────────
+    function playJumpVisualEffect_() {
+      var el = document.getElementById('jumpOverlay');
+      if (!el) return;
+      // Reset to clear, no transitions, then start the sequence.
+      el.style.transition = 'none';
+      el.style.background = '#0a0a30';
+      el.style.opacity    = '0';
+      // Force a reflow so the transition: none takes effect before the
+      // next style change actually animates.
+      void el.offsetWidth;
+
+      // Phase 1 (0–500ms): pre-distortion — dark blue overlay fades in.
+      el.style.transition = 'opacity 0.5s ease, background-color 0.2s ease';
+      el.style.opacity    = '0.45';
+
+      // Phase 2 (500–700ms): white flash.
+      setTimeout(function() {
+        el.style.transition = 'opacity 0.1s ease, background-color 0.1s ease';
+        el.style.background = '#ffffff';
+        el.style.opacity    = '1';
+      }, 500);
+
+      // Phase 3 (700–1200ms): blackout — fade to black.
+      setTimeout(function() {
+        el.style.transition = 'background-color 0.4s ease';
+        el.style.background = '#000000';
+      }, 700);
+
+      // Phase 4 (1200–1500ms): clear — fade overlay out.
+      setTimeout(function() {
+        el.style.transition = 'opacity 0.3s ease';
+        el.style.opacity    = '0';
+      }, 1200);
+    }
+
+    /**
+     * Fires the jump bridge-view sequence: opening event (caller-supplied,
+     * usually JUMP_COMMIT or EMERGENCY_JUMP_INITIATED), four sensory
+     * beats over ~1.1s, then JUMP_ARRIVAL + DRIVE_RECHARGE_STARTED to
+     * close. Visual overlay runs in parallel.
+     */
+    function playJumpSequence_(openingEventType, openingPayload) {
+      playJumpVisualEffect_();
+      if (openingEventType) playCrewAnnouncement(openingEventType, openingPayload);
+      setTimeout(function() { playCrewAnnouncement('JUMP_HUM_DEEPENS');     }, 250);
+      setTimeout(function() { playCrewAnnouncement('JUMP_STARS_SMEAR');     }, 550);
+      setTimeout(function() { playCrewAnnouncement('JUMP_FLASH_AND_SNAP');  }, 800);
+      setTimeout(function() { playCrewAnnouncement('JUMP_NEW_STARFIELD');   }, 1100);
+      setTimeout(function() {
+        playCrewAnnouncement('JUMP_ARRIVAL');
+        playCrewAnnouncement('DRIVE_RECHARGE_STARTED');
+      }, 1450);
     }
 
     // ─────────────────────────────────────────────
@@ -696,9 +767,7 @@
         .withSuccessHandler(function(result) {
           if (result.ok) {
             ship = result.ship;
-            playCrewAnnouncement('JUMP_COMMIT');
-            playCrewAnnouncement('JUMP_ARRIVAL');
-            playCrewAnnouncement('DRIVE_RECHARGE_STARTED');
+            playJumpSequence_('JUMP_COMMIT');
             _lastSeenState = getKfDriveState();
             updateShipStatus(); updatePanel(); updateNextEventLabel(); draw();
           } else {
@@ -721,9 +790,7 @@
         .withSuccessHandler(function(result) {
           if (result.ok) {
             ship = result.ship;
-            playCrewAnnouncement('EMERGENCY_JUMP_INITIATED', result.risk);
-            playCrewAnnouncement('JUMP_ARRIVAL');
-            playCrewAnnouncement('DRIVE_RECHARGE_STARTED');
+            playJumpSequence_('EMERGENCY_JUMP_INITIATED', result.risk);
             _lastSeenState = getKfDriveState();
             updateShipStatus(); updatePanel(); updateNextEventLabel(); draw();
           } else {
