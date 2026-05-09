@@ -190,23 +190,31 @@
     }
 
     function tryStartMusic_() {
+      // Register the gesture-fallback listeners synchronously up front so
+      // they catch any early user interaction even if the initial play()
+      // promise rejects asynchronously (Chrome resolves the rejection on
+      // a microtask, which can land after the user's first click).
+      var resume = function() {
+        window.removeEventListener('pointerdown', resume, true);
+        window.removeEventListener('keydown',     resume, true);
+        window.removeEventListener('wheel',       resume, true);
+        bgMusic.play().then(function() { setMusicState_(true); })
+                      .catch(function() { setMusicState_(false); });
+      };
+      window.addEventListener('pointerdown', resume, true);
+      window.addEventListener('keydown',     resume, true);
+      window.addEventListener('wheel',       resume, true);
+
       var p = bgMusic.play();
       if (p && typeof p.then === 'function') {
-        p.then(function() { setMusicState_(true); })
-         .catch(function() {
-           // Autoplay blocked — wait for the first user gesture, then retry.
-           setMusicState_(false);
-           var resume = function() {
-             bgMusic.play().then(function() { setMusicState_(true); })
-                           .catch(function() {});
-             window.removeEventListener('pointerdown', resume);
-             window.removeEventListener('keydown', resume);
-             window.removeEventListener('wheel', resume);
-           };
-           window.addEventListener('pointerdown', resume, { once: true });
-           window.addEventListener('keydown',     resume, { once: true });
-           window.addEventListener('wheel',       resume, { once: true });
-         });
+        p.then(function() {
+          setMusicState_(true);
+          window.removeEventListener('pointerdown', resume, true);
+          window.removeEventListener('keydown',     resume, true);
+          window.removeEventListener('wheel',       resume, true);
+        }).catch(function() {
+          setMusicState_(false);
+        });
       }
     }
     tryStartMusic_();
