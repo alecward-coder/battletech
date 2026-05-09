@@ -164,7 +164,7 @@
   <audio id="bgMusic" loop>
     <source src="https://raw.githubusercontent.com/alecward-coder/battletech/main/Reactor%20Core%20Continuum.mp3" type="audio/mpeg">
   </audio>
-  <button id="musicBtn" onclick="toggleMusic()">♪ music off</button>
+  <button id="musicBtn" onclick="toggleMusic()">♪ music on</button>
 
   <!-- SYS-012 Halden panel -->
   <div id="halden-panel">
@@ -180,19 +180,44 @@
     // ─────────────────────────────────────────────
     var bgMusic = document.getElementById('bgMusic');
     var musicBtn = document.getElementById('musicBtn');
-    var musicPlaying = false;
+    var musicPlaying = true;
+    musicBtn.classList.add('playing');
+
+    function setMusicState_(playing) {
+      musicPlaying = playing;
+      musicBtn.textContent = playing ? '♪ music on' : '♪ music off';
+      musicBtn.classList.toggle('playing', playing);
+    }
+
+    function tryStartMusic_() {
+      var p = bgMusic.play();
+      if (p && typeof p.then === 'function') {
+        p.then(function() { setMusicState_(true); })
+         .catch(function() {
+           // Autoplay blocked — wait for the first user gesture, then retry.
+           setMusicState_(false);
+           var resume = function() {
+             bgMusic.play().then(function() { setMusicState_(true); })
+                           .catch(function() {});
+             window.removeEventListener('pointerdown', resume);
+             window.removeEventListener('keydown', resume);
+             window.removeEventListener('wheel', resume);
+           };
+           window.addEventListener('pointerdown', resume, { once: true });
+           window.addEventListener('keydown',     resume, { once: true });
+           window.addEventListener('wheel',       resume, { once: true });
+         });
+      }
+    }
+    tryStartMusic_();
 
     function toggleMusic() {
       if (musicPlaying) {
         bgMusic.pause();
-        musicBtn.textContent = '♪ music off';
-        musicBtn.classList.remove('playing');
-        musicPlaying = false;
+        setMusicState_(false);
       } else {
-        bgMusic.play();
-        musicBtn.textContent = '♪ music on';
-        musicBtn.classList.add('playing');
-        musicPlaying = true;
+        bgMusic.play().then(function() { setMusicState_(true); })
+                      .catch(function() { setMusicState_(false); });
       }
     }
 
