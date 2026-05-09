@@ -1002,6 +1002,42 @@
     var SYS_MOON_R    = 28;
     var SYS_FAC_OFF   = 22;
 
+    // ─────────────────────────────────────────────
+    // [SYS-014] Real Sol orbital elements
+    // Periods are sidereal in Earth days. L0 is the ecliptic mean longitude
+    // (deg) at J2000.0 (2000-01-01 12:00 UT). Planet radii are real semi-
+    // major axes scaled at SOL_AU_PX px/AU. Moon distances are stylized
+    // (real distances would render sub-pixel) but periods are real.
+    // ─────────────────────────────────────────────
+    var SOL_AU_PX = 28;
+    var SOL_PLANET_ORBITS = {
+      '2371-mercury': { period: 87.969,    L0: 252.25166, a_au: 0.387 },
+      '2371-venus':   { period: 224.701,   L0: 181.97970, a_au: 0.723 },
+      '2371-terra':   { period: 365.256,   L0: 100.46435, a_au: 1.000 },
+      '2371-mars':    { period: 686.971,   L0: 355.43332, a_au: 1.524 },
+      '2371-jupiter': { period: 4332.589,  L0:  34.40438, a_au: 5.203 },
+      '2371-saturn':  { period: 10759.22,  L0:  49.94432, a_au: 9.537 },
+      '2371-uranus':  { period: 30688.5,   L0: 313.23218, a_au: 19.191 },
+      '2371-neptune': { period: 60182,     L0: 304.88003, a_au: 30.069 }
+    };
+    var SOL_MOON_ORBITS = {
+      // L0 below is a placeholder spread, not astronomically grounded —
+      // real moon ephemerides drift relative to a global epoch and aren't
+      // worth the complexity for visual purposes. Periods are real.
+      '2371-luna':     { period: 27.3217,  L0:   0, parent: '2371-terra',   a_px: 22 },
+      '2371-phobos':   { period: 0.31891,  L0:   0, parent: '2371-mars',    a_px: 14 },
+      '2371-deimos':   { period: 1.26244,  L0:  90, parent: '2371-mars',    a_px: 26 },
+      '2371-io':       { period: 1.76914,  L0:   0, parent: '2371-jupiter', a_px: 14 },
+      '2371-europa':   { period: 3.55118,  L0:  60, parent: '2371-jupiter', a_px: 22 },
+      '2371-ganymede': { period: 7.15455,  L0: 120, parent: '2371-jupiter', a_px: 32 },
+      '2371-callisto': { period: 16.6890,  L0: 200, parent: '2371-jupiter', a_px: 44 },
+      '2371-titan':    { period: 15.9454,  L0:   0, parent: '2371-saturn',  a_px: 22 }
+    };
+    var J2000_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
+    function daysSinceJ2000_() {
+      return (FTL_EPOCH_MS + simTick * 1000 - J2000_MS) / 86400000;
+    }
+
     function enterSystemView(systemId) {
       var sysEntry = null;
       for (var i = 0; i < systems.length; i++) {
@@ -1093,6 +1129,9 @@
     function computeSystemLayout_(data) {
       var entities = [];
       var byId     = {};
+      // Sol gets real orbital motion; other systems keep the stylized
+      // concentric-band layout for now.
+      var hasOrbits = (data.system && Number(data.system.system_id) === 2371);
 
       // Locate the star
       var starBody = null;
@@ -1126,12 +1165,15 @@
         var R = SYS_BAND_R[bandName] || 500;
         for (var k = 0; k < arr.length; k++) {
           var b   = arr[k];
-          var ang = (2 * Math.PI * k) / Math.max(arr.length, 1) - Math.PI / 2;
+          var orb = hasOrbits ? SOL_PLANET_ORBITS[b.body_id] : null;
+          var ringR = orb ? (orb.a_au * SOL_AU_PX) : R;
+          var ang   = orb ? 0 : ((2 * Math.PI * k) / Math.max(arr.length, 1) - Math.PI / 2);
           var ent = {
             kind: (b.body_type === 'asteroid_belt') ? 'asteroid_belt' : 'planet',
             id:   b.body_id, name: b.body_name,
-            x:    R * Math.cos(ang), y: R * Math.sin(ang),
-            ringRadius: R,
+            x:    ringR * Math.cos(ang), y: ringR * Math.sin(ang),
+            ringRadius: ringR,
+            orbit: orb || null,
             raw: b
           };
           entities.push(ent);
@@ -1153,12 +1195,16 @@
         var siblings = moonsByParent[pid];
         siblings.sort(function(a, b) { return Number(a.orbit_order || 0) - Number(b.orbit_order || 0); });
         for (var i = 0; i < siblings.length; i++) {
-          var m   = siblings[i];
-          var ang = (2 * Math.PI * i) / Math.max(siblings.length, 1);
+          var m    = siblings[i];
+          var morb = hasOrbits ? SOL_MOON_ORBITS[m.body_id] : null;
+          var moonR = morb ? morb.a_px : SYS_MOON_R;
+          var mang  = morb ? 0 : ((2 * Math.PI * i) / Math.max(siblings.length, 1));
           var ent = {
             kind: 'moon', id: m.body_id, name: m.body_name,
-            x: parent.x + SYS_MOON_R * Math.cos(ang),
-            y: parent.y + SYS_MOON_R * Math.sin(ang),
+            x: parent.x + moonR * Math.cos(mang),
+            y: parent.y + moonR * Math.sin(mang),
+            moonOrbit: morb || null,
+            parentId:  morb ? morb.parent : pid,
             raw: m
           };
           entities.push(ent);
@@ -1170,6 +1216,7 @@
       for (var i = 0; i < data.jumpPoints.length; i++) {
         var jp = data.jumpPoints[i];
         var x, y;
+        var parentRelative = null;
         if (jp.jump_point_type === 'zenith') {
           x = 0; y = SYS_JP_R;
         } else if (jp.jump_point_type === 'nadir') {
@@ -1181,13 +1228,18 @@
             var pRadius = Math.sqrt(parent.x * parent.x + parent.y * parent.y);
             x = (pRadius + 60) * Math.cos(pAng + 0.4);
             y = (pRadius + 60) * Math.sin(pAng + 0.4);
+            parentRelative = { parentId: jp.associated_body_id, mode: 'pirate', radial: 60, angular: 0.4 };
           } else {
             x = SYS_JP_R * 0.7; y = SYS_JP_R * 0.7;
           }
         } else {
           x = -SYS_JP_R; y = 0;   // generic / lagrange — left side
         }
-        var ent = { kind: 'jump_point', id: jp.jump_point_id, name: jp.jump_point_name, x: x, y: y, raw: jp };
+        var ent = {
+          kind: 'jump_point', id: jp.jump_point_id, name: jp.jump_point_name,
+          x: x, y: y, raw: jp,
+          parentRelative: parentRelative
+        };
         entities.push(ent);
         byId[jp.jump_point_id] = ent;
       }
@@ -1197,22 +1249,29 @@
         var f = data.infrastructure[i];
         var parent = f.orbiting_body_id ? byId[f.orbiting_body_id] : null;
         var x, y;
+        var parentRel = null;
         if (parent) {
           var ang = (i * 0.7) + Math.PI / 4;   // semi-deterministic offset
           x = parent.x + SYS_FAC_OFF * Math.cos(ang);
           y = parent.y + SYS_FAC_OFF * Math.sin(ang);
+          parentRel = { parentId: f.orbiting_body_id, mode: 'cartesian',
+                        ox: SYS_FAC_OFF * Math.cos(ang), oy: SYS_FAC_OFF * Math.sin(ang) };
         } else {
           // Deep-space facility: place near the default arrival point (zenith) if known
           var zen = byId[data.system.default_arrival_point];
           if (zen) { x = zen.x + 30; y = zen.y - 20; }
           else     { x = 0; y = SYS_JP_R - 60; }
         }
-        var ent = { kind: 'infrastructure', id: f.facility_id, name: f.facility_name, x: x, y: y, raw: f };
+        var ent = {
+          kind: 'infrastructure', id: f.facility_id, name: f.facility_name,
+          x: x, y: y, raw: f,
+          parentRelative: parentRel
+        };
         entities.push(ent);
         byId[f.facility_id] = ent;
       }
 
-      // 6. Routes resolved to screen-aware endpoints
+      // 6. Routes — store endpoint IDs so live orbital motion updates the lines
       var routes = [];
       for (var i = 0; i < data.routes.length; i++) {
         var r      = data.routes[i];
@@ -1221,13 +1280,71 @@
         if (!origin || !dest) continue;
         routes.push({
           id:  r.route_id,
+          originId: r.origin_location_id,
+          destId:   r.destination_location_id,
           x1:  origin.x, y1: origin.y,
           x2:  dest.x,   y2: dest.y,
           raw: r
         });
       }
 
-      return { entities: entities, routes: routes, byId: byId, star: starEnt };
+      return {
+        entities: entities, routes: routes, byId: byId, star: starEnt,
+        hasOrbits: hasOrbits
+      };
+    }
+
+    // Updates entity positions in the layout for the current sim time using
+    // real Sol orbital elements. Order matters: planets first (around star),
+    // then moons (around planets), then anything that follows a parent —
+    // pirate jump points (parent-relative angular offset) and orbital
+    // infrastructure (parent-relative cartesian offset).
+    function applyOrbits_(layout) {
+      if (!layout || !layout.hasOrbits || !layout.entities) return;
+      var t   = daysSinceJ2000_();
+      var DEG = Math.PI / 180;
+
+      // 1. Planets around the star
+      for (var i = 0; i < layout.entities.length; i++) {
+        var ent = layout.entities[i];
+        var orb = ent.orbit;
+        if (!orb) continue;
+        var L = (orb.L0 + 360 * (t / orb.period)) * DEG;
+        var R = orb.a_au * SOL_AU_PX;
+        ent.x = R * Math.cos(L);
+        ent.y = R * Math.sin(L);
+        ent.ringRadius = R;
+      }
+
+      // 2. Moons relative to their parent planet
+      for (var i = 0; i < layout.entities.length; i++) {
+        var ent  = layout.entities[i];
+        var morb = ent.moonOrbit;
+        if (!morb) continue;
+        var parent = layout.byId[morb.parent];
+        if (!parent) continue;
+        var Lm = (morb.L0 + 360 * (t / morb.period)) * DEG;
+        ent.x = parent.x + morb.a_px * Math.cos(Lm);
+        ent.y = parent.y + morb.a_px * Math.sin(Lm);
+      }
+
+      // 3. Pirate jump points and parent-relative infrastructure
+      for (var i = 0; i < layout.entities.length; i++) {
+        var ent = layout.entities[i];
+        var pr  = ent.parentRelative;
+        if (!pr) continue;
+        var parent = layout.byId[pr.parentId];
+        if (!parent) continue;
+        if (pr.mode === 'pirate') {
+          var pAng    = Math.atan2(parent.y, parent.x);
+          var pRadius = Math.sqrt(parent.x * parent.x + parent.y * parent.y);
+          ent.x = (pRadius + pr.radial) * Math.cos(pAng + pr.angular);
+          ent.y = (pRadius + pr.radial) * Math.sin(pAng + pr.angular);
+        } else if (pr.mode === 'cartesian') {
+          ent.x = parent.x + pr.ox;
+          ent.y = parent.y + pr.oy;
+        }
+      }
     }
 
     function findEntityAt(sx, sy) {
@@ -1248,19 +1365,33 @@
     function drawSystemView_() {
       if (!ctx || !systemViewLayout) return;
 
+      // Live orbital motion for systems with real elements (Sol).
+      applyOrbits_(systemViewLayout);
+
       ctx.fillStyle = '#0a0a12';
       ctx.fillRect(0, 0, width, height);
 
       var center = worldToScreen(0, 0);
 
-      // Concentric ring guides (orbit bands)
+      // Orbit guides
       ctx.strokeStyle = '#1a1a2e';
       ctx.lineWidth   = 1;
-      var bandRadii = [SYS_BAND_R.inner, SYS_BAND_R.habitable, SYS_BAND_R.outer, SYS_BAND_R.deep_outer];
-      for (var i = 0; i < bandRadii.length; i++) {
-        ctx.beginPath();
-        ctx.arc(center.x, center.y, bandRadii[i] * view.scale, 0, Math.PI * 2);
-        ctx.stroke();
+      if (systemViewLayout.hasOrbits) {
+        // Per-planet orbit rings at real radii
+        for (var i = 0; i < systemViewLayout.entities.length; i++) {
+          var e = systemViewLayout.entities[i];
+          if (!e.orbit) continue;
+          ctx.beginPath();
+          ctx.arc(center.x, center.y, e.ringRadius * view.scale, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      } else {
+        var bandRadii = [SYS_BAND_R.inner, SYS_BAND_R.habitable, SYS_BAND_R.outer, SYS_BAND_R.deep_outer];
+        for (var i = 0; i < bandRadii.length; i++) {
+          ctx.beginPath();
+          ctx.arc(center.x, center.y, bandRadii[i] * view.scale, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       }
       // Outer system boundary (jump-point ring)
       ctx.strokeStyle = '#2a2a3e';
@@ -1268,11 +1399,18 @@
       ctx.arc(center.x, center.y, SYS_JP_R * view.scale, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Routes (under entities)
+      // Routes (under entities) — endpoints looked up live so orbital motion
+      // drags route lines along with their endpoints.
       for (var i = 0; i < systemViewLayout.routes.length; i++) {
         var r  = systemViewLayout.routes[i];
-        var p1 = worldToScreen(r.x1, r.y1);
-        var p2 = worldToScreen(r.x2, r.y2);
+        var o  = r.originId ? systemViewLayout.byId[r.originId] : null;
+        var d  = r.destId   ? systemViewLayout.byId[r.destId]   : null;
+        var ox = o ? o.x : r.x1;
+        var oy = o ? o.y : r.y1;
+        var dx = d ? d.x : r.x2;
+        var dy = d ? d.y : r.y2;
+        var p1 = worldToScreen(ox, oy);
+        var p2 = worldToScreen(dx, dy);
         var isPirate = r.raw && (r.raw.route_type === 'pirate_point_to_target');
         ctx.strokeStyle = isPirate ? 'rgba(255,80,80,0.25)' : 'rgba(120,120,200,0.18)';
         ctx.lineWidth   = 1;
