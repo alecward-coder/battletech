@@ -1897,12 +1897,50 @@
       }
     }
 
+    // Zoom momentum: each wheel tick adds an impulse to velocity (in
+    // natural-log scale per frame). A RAF loop applies and decays it so
+    // a heavy scroll keeps gliding after the wheel stops.
+    var zoomVelocity = 0;
+    var zoomRafId    = null;
+    var ZOOM_IMPULSE = 0.08;
+    var ZOOM_DECAY   = 0.88;
+    var ZOOM_EPS     = 0.001;
+
     function onWheel(e) {
       e.preventDefault();
-      view.scale *= e.deltaY > 0 ? 0.9 : 1.1;
+      if (isTransitioningViews) return;
+      var normalized = Math.max(-1, Math.min(1, -e.deltaY / 100));
+      zoomVelocity += normalized * ZOOM_IMPULSE;
+      if (zoomRafId === null) {
+        zoomRafId = requestAnimationFrame(applyZoomMomentum_);
+      }
+    }
+
+    function applyZoomMomentum_() {
+      zoomRafId = null;
+      if (isTransitioningViews) { zoomVelocity = 0; return; }
+      if (Math.abs(zoomVelocity) < ZOOM_EPS) {
+        zoomVelocity = 0;
+        draw();
+        return;
+      }
+
+      view.scale *= Math.exp(zoomVelocity);
       view.scale = Math.max(0.05, Math.min(20, view.scale));
-      if (tryAutoTransitionViews_()) return;
+
+      // Kill any leftover velocity once we hit a clamp boundary.
+      if (view.scale >= 20    && zoomVelocity > 0) zoomVelocity = 0;
+      if (view.scale <= 0.05  && zoomVelocity < 0) zoomVelocity = 0;
+
+      zoomVelocity *= ZOOM_DECAY;
+
+      if (tryAutoTransitionViews_()) {
+        zoomVelocity = 0;
+        return;
+      }
+
       draw();
+      zoomRafId = requestAnimationFrame(applyZoomMomentum_);
     }
 
     // Returns true if a view transition was triggered (caller should skip its own draw).
