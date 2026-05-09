@@ -1870,7 +1870,7 @@
     function onWheel(e) {
       e.preventDefault();
       view.scale *= e.deltaY > 0 ? 0.9 : 1.1;
-      view.scale = Math.max(0.05, Math.min(5, view.scale));
+      view.scale = Math.max(0.05, Math.min(20, view.scale));
       draw();
     }
 
