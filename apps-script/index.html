@@ -119,6 +119,7 @@
     </div>
     <div>
       <button id="btn-back-galactic" onclick="exitSystemView()" style="display:none">← Back to starmap</button>
+      <button id="btn-back-system" onclick="exitOrbitalView()" style="display:none">← Back to system</button>
       <button id="btn-terra" onclick="centerTerra()">Terra</button>
       <span id="zoom">100%</span>
     </div>
@@ -911,12 +912,14 @@
     var canvas, ctx, width, height;
 
     // [SYS-014] In-system view state
-    var currentView       = 'galactic';   // 'galactic' | 'system'
+    var currentView       = 'galactic';   // 'galactic' | 'system' | 'orbital'
     var systemViewData    = null;         // bundle from getStarSystemView
     var systemViewLayout  = null;         // computed positions { entities, routes, byId }
-    var selectedEntity    = null;         // selected in system view
+    var selectedEntity    = null;         // selected in system view / orbital view
     var hoveredEntity     = null;
     var galacticState     = null;         // saved view + selected when entering system view
+    var orbitalLayout     = null;         // computed positions for orbital (planet-centric) view
+    var systemViewState   = null;         // saved view when entering orbital view
 
     // [SYS-014] Seamless zoom-driven view transitions
     // The cross-fade fires when the galactic dot reaches the same pixel
@@ -1347,6 +1350,313 @@
       }
     }
 
+    // ─────────────────────────────────────────────
+    // [SYS-014] Orbital view — centered on a single body, showing its
+    // satellites + parent-relative jump points + orbital infrastructure at
+    // realistic semi-major axes auto-scaled to fit the canvas.
+    // ─────────────────────────────────────────────
+    var KM_PER_AU             = 149597870.7;
+    var ORBITAL_FIT_RADIUS_PX = 380;   // outer satellite sits roughly here
+    var ORBITAL_BODY_MIN_PX   = 10;    // floor on the central body's pixel radius
+    // Real body radii (km). Used by the orbital view to draw the central
+    // body at correct scale relative to its satellites — important so e.g.
+    // Phobos clearly orbits just above Mars's surface.
+    var SOL_BODY_RADIUS_KM = {
+      '2371-mercury':  2440, '2371-venus':    6052, '2371-terra':    6371,
+      '2371-mars':     3390, '2371-jupiter': 69911, '2371-saturn':  58232,
+      '2371-uranus':  25362, '2371-neptune': 24622,
+      '2371-luna':     1737, '2371-phobos':     11, '2371-deimos':      6,
+      '2371-io':       1822, '2371-europa':   1561, '2371-ganymede': 2634,
+      '2371-callisto': 2410, '2371-titan':    2575
+    };
+
+    // Build an orbital layout for `centerBody` (an entity from the system
+    // layout). Pulls satellites, pirate JPs, and infrastructure from the
+    // already-loaded systemViewData. All positions are in this view's local
+    // frame (parent at world origin); a body-specific scalePxPerAU keeps
+    // the outermost satellite near ORBITAL_FIT_RADIUS_PX.
+    function computeOrbitalLayout_(centerBody) {
+      if (!systemViewData || !centerBody) return null;
+      var entities = [];
+      var byId     = {};
+      var centerId = centerBody.id;
+
+      var centerEnt = {
+        kind: centerBody.kind,
+        id:   centerBody.id,
+        name: centerBody.name,
+        x: 0, y: 0,
+        raw: centerBody.raw || {}
+      };
+      entities.push(centerEnt);
+      byId[centerEnt.id] = centerEnt;
+
+      // Collect satellites of this body
+      var sats = [];
+      for (var i = 0; i < systemViewData.bodies.length; i++) {
+        var b = systemViewData.bodies[i];
+        if (b.body_type !== 'moon') continue;
+        if (String(b.orbit_parent_id) !== String(centerId)) continue;
+        sats.push(b);
+      }
+      sats.sort(function(a, b) { return Number(a.orbit_order || 0) - Number(b.orbit_order || 0); });
+
+      // Determine maximum semi-major axis (AU) among real satellites; fall
+      // back to a reasonable default for bodies without orbital data.
+      var maxAu = 0;
+      for (var i = 0; i < sats.length; i++) {
+        var orb = SOL_MOON_ORBITS[sats[i].body_id];
+        if (orb && orb.a_au > maxAu) maxAu = orb.a_au;
+      }
+      // Bodies without satellites: scale to show roughly geosync/escape range.
+      // Use 0.001 AU (~150,000 km) as a default extent so stations are visible.
+      var scalePxPerAU = (maxAu > 0)
+        ? (ORBITAL_FIT_RADIUS_PX / maxAu)
+        : (ORBITAL_FIT_RADIUS_PX / 0.001);
+
+      // Place satellites
+      for (var i = 0; i < sats.length; i++) {
+        var m   = sats[i];
+        var orb = SOL_MOON_ORBITS[m.body_id] || null;
+        var ent = {
+          kind:      'moon',
+          id:        m.body_id,
+          name:      m.body_name,
+          x: 0, y: 0,
+          moonOrbit: orb,
+          parentId:  centerId,
+          raw:       m
+        };
+        if (!orb) {
+          // Fallback: stylized concentric placement when we lack orbital data
+          var ang = (2 * Math.PI * i) / Math.max(sats.length, 1);
+          var R   = ORBITAL_FIT_RADIUS_PX * (i + 1) / Math.max(sats.length, 1);
+          ent.x = R * Math.cos(ang);
+          ent.y = R * Math.sin(ang);
+        }
+        entities.push(ent);
+        byId[m.body_id] = ent;
+      }
+
+      // Pirate / L-point jump points associated with this body. Place each
+      // outside the outer satellite at a fixed angular offset so they read
+      // as Lagrange-adjacent without trying to be physically exact.
+      var jpAngStep = Math.PI * 0.6;
+      var jpBaseR   = (maxAu > 0 ? maxAu : 0.001) * scalePxPerAU + 60;
+      var jpIdx = 0;
+      for (var i = 0; i < systemViewData.jumpPoints.length; i++) {
+        var jp = systemViewData.jumpPoints[i];
+        if (jp.jump_point_type !== 'pirate_point') continue;
+        if (String(jp.associated_body_id) !== String(centerId)) continue;
+        var ang = jpIdx * jpAngStep + 0.4;
+        var ent = {
+          kind: 'jump_point',
+          id:   jp.jump_point_id,
+          name: jp.jump_point_name,
+          x:    jpBaseR * Math.cos(ang),
+          y:    jpBaseR * Math.sin(ang),
+          raw:  jp
+        };
+        entities.push(ent);
+        byId[jp.jump_point_id] = ent;
+        jpIdx++;
+      }
+
+      // Orbital infrastructure attached to this body. Place at small
+      // semi-deterministic offsets just outside the body's surface — a
+      // tactical "near-orbit" cluster.
+      var infraR = Math.max(ORBITAL_BODY_MIN_PX * 4, scalePxPerAU * 0.0003);
+      var infraIdx = 0;
+      for (var i = 0; i < systemViewData.infrastructure.length; i++) {
+        var f = systemViewData.infrastructure[i];
+        if (String(f.orbiting_body_id) !== String(centerId)) continue;
+        var ang = infraIdx * 0.9 + 0.3;
+        var ent = {
+          kind: 'infrastructure',
+          id:   f.facility_id,
+          name: f.facility_name,
+          x:    infraR * Math.cos(ang),
+          y:    infraR * Math.sin(ang),
+          raw:  f
+        };
+        entities.push(ent);
+        byId[f.facility_id] = ent;
+        infraIdx++;
+      }
+
+      return {
+        entities:     entities,
+        byId:         byId,
+        center:       centerEnt,
+        scalePxPerAU: scalePxPerAU,
+        maxAu:        maxAu
+      };
+    }
+
+    function applyOrbitalPositions_(layout) {
+      if (!layout) return;
+      var t   = daysSinceJ2000_();
+      var DEG = Math.PI / 180;
+      var sc  = layout.scalePxPerAU;
+      for (var i = 0; i < layout.entities.length; i++) {
+        var ent = layout.entities[i];
+        var orb = ent.moonOrbit;
+        if (!orb) continue;
+        var L = (orb.L0 + 360 * (t / orb.period)) * DEG;
+        var R = orb.a_au * sc;
+        ent.x = R * Math.cos(L);
+        ent.y = R * Math.sin(L);
+      }
+    }
+
+    function bodyHasOrbitalContent_(bodyEntity) {
+      if (!bodyEntity || !systemViewData) return false;
+      var id = bodyEntity.id;
+      // Has at least one moon
+      for (var i = 0; i < systemViewData.bodies.length; i++) {
+        var b = systemViewData.bodies[i];
+        if (b.body_type === 'moon' && String(b.orbit_parent_id) === String(id)) return true;
+      }
+      // Or at least one piece of orbital infrastructure
+      for (var i = 0; i < systemViewData.infrastructure.length; i++) {
+        var f = systemViewData.infrastructure[i];
+        if (String(f.orbiting_body_id) === String(id)) return true;
+      }
+      // Or a pirate / L-point JP attached to it
+      for (var i = 0; i < systemViewData.jumpPoints.length; i++) {
+        var jp = systemViewData.jumpPoints[i];
+        if (jp.jump_point_type === 'pirate_point' &&
+            String(jp.associated_body_id) === String(id)) return true;
+      }
+      return false;
+    }
+
+    function enterOrbitalView(bodyEntity) {
+      if (!bodyEntity) return;
+      var layout = computeOrbitalLayout_(bodyEntity);
+      if (!layout) return;
+      systemViewState = { view: { x: view.x, y: view.y, scale: view.scale }, selectedEntity: selectedEntity };
+      orbitalLayout = layout;
+      currentView   = 'orbital';
+      selectedEntity = null;
+      hoveredEntity  = null;
+      view = { x: 0, y: 0, scale: 1 };
+      document.getElementById('viewTitle').textContent =
+        bodyEntity.name + ' — Orbital View';
+      document.getElementById('btn-back-system').style.display = '';
+      document.getElementById('btn-back-galactic').style.display = 'none';
+      document.getElementById('btn-terra').style.display = 'none';
+      updatePanel();
+      draw();
+    }
+
+    function exitOrbitalView() {
+      if (currentView !== 'orbital') return;
+      orbitalLayout = null;
+      currentView   = 'system';
+      selectedEntity = systemViewState ? systemViewState.selectedEntity : null;
+      hoveredEntity  = null;
+      if (systemViewState && systemViewState.view) {
+        view = systemViewState.view;
+      } else {
+        view = { x: 0, y: 0, scale: 0.5 };
+      }
+      systemViewState = null;
+      document.getElementById('viewTitle').textContent =
+        (systemViewData && systemViewData.system
+          ? (systemViewData.system.system_name + ' — System View')
+          : 'System View');
+      document.getElementById('btn-back-system').style.display = 'none';
+      document.getElementById('btn-back-galactic').style.display = '';
+      document.getElementById('btn-terra').style.display = 'none';
+      updatePanel();
+      draw();
+    }
+
+    function findOrbitalEntityAt(sx, sy) {
+      if (!orbitalLayout) return null;
+      var w     = screenToWorld(sx, sy);
+      var hitR  = Math.max(8, 14 / view.scale);
+      var best = null;
+      var bestDist = Infinity;
+      for (var i = 0; i < orbitalLayout.entities.length; i++) {
+        var e  = orbitalLayout.entities[i];
+        var dx = e.x - w.x, dy = e.y - w.y;
+        var d  = Math.sqrt(dx*dx + dy*dy);
+        if (d < hitR && d < bestDist) { best = e; bestDist = d; }
+      }
+      return best;
+    }
+
+    function drawOrbitalView_() {
+      if (!ctx || !orbitalLayout) return;
+      applyOrbitalPositions_(orbitalLayout);
+
+      ctx.fillStyle = '#0a0a12';
+      ctx.fillRect(0, 0, width, height);
+
+      var center = worldToScreen(0, 0);
+
+      // Satellite orbit guides — concentric rings at each moon's a_au
+      ctx.strokeStyle = '#1a1a2e';
+      ctx.lineWidth   = 1;
+      for (var i = 0; i < orbitalLayout.entities.length; i++) {
+        var e = orbitalLayout.entities[i];
+        if (!e.moonOrbit) continue;
+        var R = e.moonOrbit.a_au * orbitalLayout.scalePxPerAU;
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, R * view.scale, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Central body — drawn at realistic radius (km / km-per-px) with a floor
+      var centerEnt = orbitalLayout.center;
+      var radiusKm  = SOL_BODY_RADIUS_KM[centerEnt.id] ||
+        (centerEnt.raw && centerEnt.raw.body_radius_km
+          ? Number(centerEnt.raw.body_radius_km)
+          : 6000);
+      var bodyAu       = (radiusKm > 0 ? radiusKm : 6000) / KM_PER_AU;
+      var bodyWorldR   = bodyAu * orbitalLayout.scalePxPerAU;
+      var bodyScreenR  = Math.max(ORBITAL_BODY_MIN_PX, bodyWorldR * view.scale);
+      ctx.fillStyle = '#9ac';
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, bodyScreenR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Body label
+      ctx.fillStyle = '#fff';
+      ctx.font = '12px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(centerEnt.name, center.x, center.y - bodyScreenR - 6);
+
+      // Other entities (moons, infrastructure, jump points)
+      for (var i = 0; i < orbitalLayout.entities.length; i++) {
+        var e = orbitalLayout.entities[i];
+        if (e.id === centerEnt.id) continue;
+        var p = worldToScreen(e.x, e.y);
+        if (p.x < -50 || p.x > width + 50 || p.y < -50 || p.y > height + 50) continue;
+        var isSel = selectedEntity && selectedEntity.id === e.id;
+        var isHov = hoveredEntity  && hoveredEntity.id  === e.id;
+        drawEntity_(e, p, isSel, isHov);
+      }
+
+      // Player ship marker, if anchored to something in this orbital frame
+      if (ship && systemViewData &&
+          Number(ship.systemId) === Number(systemViewData.system.system_id)) {
+        var locEnt = ship.locationId ? orbitalLayout.byId[ship.locationId] : null;
+        if (locEnt) {
+          var p = worldToScreen(locEnt.x, locEnt.y);
+          ctx.strokeStyle = '#f0a';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      document.getElementById('zoom').textContent = Math.round(view.scale * 100) + '%';
+    }
+
     function findEntityAt(sx, sy) {
       if (!systemViewLayout) return null;
       var w        = screenToWorld(sx, sy);
@@ -1559,6 +1869,10 @@
         drawTransitionFrame_();
         return;
       }
+      if (currentView === 'orbital') {
+        drawOrbitalView_();
+        return;
+      }
       if (currentView === 'system') {
         drawSystemView_();
         return;
@@ -1660,8 +1974,8 @@
     }
 
     function updatePanel() {
-      // [SYS-014] In system view, render the selected entity instead.
-      if (currentView === 'system') {
+      // [SYS-014] In system or orbital view, render the selected entity.
+      if (currentView === 'system' || currentView === 'orbital') {
         updateSystemEntityPanel_();
         return;
       }
@@ -1793,6 +2107,24 @@
         : '(system)';
 
       if (!selectedEntity) {
+        if (currentView === 'orbital' && orbitalLayout) {
+          var c = orbitalLayout.center;
+          var moonCount = 0, infraCount = 0, jpCount = 0;
+          for (var i = 0; i < orbitalLayout.entities.length; i++) {
+            var ee = orbitalLayout.entities[i];
+            if (ee === c) continue;
+            if (ee.kind === 'moon')           moonCount++;
+            else if (ee.kind === 'infrastructure') infraCount++;
+            else if (ee.kind === 'jump_point')     jpCount++;
+          }
+          nameEl.textContent = c.name + ' — orbital';
+          infoEl.innerHTML =
+            'In: ' + sysHeader + '<br>' +
+            'Satellites: ' + moonCount + '<br>' +
+            'Stations: '   + infraCount + '<br>' +
+            'Jump points: '+ jpCount;
+          return;
+        }
         nameEl.textContent = sysHeader;
         infoEl.innerHTML   =
           (systemViewData && systemViewData.system
@@ -1817,6 +2149,19 @@
 
       // [SYS-014] Travel/abort buttons for in-system movement
       _addInSystemTravelButtons_(actionsEl, e);
+
+      // [SYS-014] Orbital view entry — only when in system view and the
+      // selected body has moons / infrastructure / pirate jump points.
+      if (currentView === 'system' &&
+          (e.kind === 'planet' || e.kind === 'moon') &&
+          bodyHasOrbitalContent_(e)) {
+        var btn = document.createElement('button');
+        btn.textContent = 'View orbit';
+        btn.onclick = (function(ent) {
+          return function() { enterOrbitalView(ent); };
+        })(e);
+        actionsEl.appendChild(btn);
+      }
 
       switch (e.kind) {
         case 'star':
@@ -2039,6 +2384,9 @@
         view.x = drag.vx + dx;
         view.y = drag.vy - dy;
         draw();
+      } else if (currentView === 'orbital') {
+        hoveredEntity = findOrbitalEntityAt(pos.x, pos.y);
+        draw();
       } else if (currentView === 'system') {
         hoveredEntity = findEntityAt(pos.x, pos.y);
         draw();
@@ -2053,6 +2401,12 @@
     function onClick(e) {
       if (drag) return;
       var pos = getMousePos(e);
+      if (currentView === 'orbital') {
+        selectedEntity = findOrbitalEntityAt(pos.x, pos.y);
+        updatePanel();
+        draw();
+        return;
+      }
       if (currentView === 'system') {
         selectedEntity = findEntityAt(pos.x, pos.y);
         updatePanel();
@@ -2066,6 +2420,17 @@
 
     function onDblClick(e) {
       var pos = getMousePos(e);
+      if (currentView === 'orbital') {
+        var ent = findOrbitalEntityAt(pos.x, pos.y);
+        if (ent) {
+          view.x = -ent.x;
+          view.y = -ent.y;
+          selectedEntity = ent;
+          updatePanel();
+          draw();
+        }
+        return;
+      }
       if (currentView === 'system') {
         // Double-click recenters camera on entity in system view.
         var ent = findEntityAt(pos.x, pos.y);
@@ -2108,8 +2473,11 @@
     var ZOOM_MIN              = 0.05;
     var ZOOM_MAX_GALACTIC     = 500;
     var ZOOM_MAX_SYSTEM       = 20;
+    var ZOOM_MAX_ORBITAL      = 50;
     function currentZoomMax_() {
-      return currentView === 'system' ? ZOOM_MAX_SYSTEM : ZOOM_MAX_GALACTIC;
+      if (currentView === 'orbital') return ZOOM_MAX_ORBITAL;
+      if (currentView === 'system')  return ZOOM_MAX_SYSTEM;
+      return ZOOM_MAX_GALACTIC;
     }
 
     function onWheel(e) {
