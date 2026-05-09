@@ -1428,7 +1428,7 @@
       drawGalacticView_();
     }
 
-    function drawGalacticView_() {
+    function drawGalacticView_(skipSystemId) {
       ctx.fillStyle = '#0a0a12';
       ctx.fillRect(0, 0, width, height);
 
@@ -1468,6 +1468,7 @@
       for (var i = 0; i < systems.length; i++) {
         var s = systems[i];
         if (!isSystemRevealed(s, simYear)) continue;
+        if (skipSystemId !== undefined && Number(s.id) === Number(skipSystemId)) continue;
 
         var p = worldToScreen(s.x, s.y);
         if (p.x < -10 || p.x > width+10 || p.y < -10 || p.y > height+10) continue;
@@ -1510,14 +1511,14 @@
       document.getElementById('zoom').textContent = Math.round(view.scale * 100) + '%';
     }
 
-    var GALACTIC_DOT_COEFF        = 2;     // px per unit scale
+    var GALACTIC_DOT_COEFF        = 0.5;   // px per unit scale
+    var GALACTIC_DOT_MAX_PX       = 8;     // hard cap so adjacent systems can't overlap
     var TRANSITION_TARGET_DOT_PX  = SYS_JP_R * 0.5; // 475 px = zenith ring at default sys scale
     function galacticSystemRadiusPx_() {
-      // Pixel radius of a system dot in galactic view. Grows linearly with
-      // zoom so deep zoom can bring the dot up to the diameter of the
-      // system-view zenith ring (at default sys scale 0.5 that's 475 px).
-      // Floor at 2 px so it's still visible at default zoom.
-      return Math.max(2, view.scale * GALACTIC_DOT_COEFF);
+      // Galactic dots stay small (≤ 8 px) at all zooms so they never overlap
+      // even where systems sit close together. The dot's grow-into-zenith-ring
+      // animation runs during the transition fade, not as part of normal zoom.
+      return Math.max(2, Math.min(GALACTIC_DOT_MAX_PX, view.scale * GALACTIC_DOT_COEFF));
     }
 
     function updatePanel() {
@@ -2015,12 +2016,11 @@
     function tryAutoTransitionViews_() {
       if (isTransitioningViews) return false;
 
-      if (currentView === 'galactic' &&
-          galacticSystemRadiusPx_() >= TRANSITION_TARGET_DOT_PX) {
-        // Trigger when the dot has grown to the zenith-ring diameter AND a
-        // single revealed system is on canvas. The dot-size requirement
-        // guarantees the post-fade sys scale is at least the system view's
-        // default 0.5×, so the system view doesn't enter compressed.
+      if (currentView === 'galactic' && view.scale > 2) {
+        // Trigger when a single revealed system is on canvas. The dot's
+        // grow-to-zenith animation runs during the fade, so the trigger
+        // doesn't need to wait for any specific zoom level beyond a small
+        // floor that prevents firing trivially at default zoom.
         var visible = [];
         for (var i = 0; i < systems.length; i++) {
           var s = systems[i];
@@ -2051,20 +2051,21 @@
       return false;
     }
 
-    // Loads system-view data for `target`, then runs a cross-fade where the
-    // system's zenith ring lands at the same on-screen diameter the galactic
-    // dot occupied. Anchors the system around that screen position so the
-    // transition is purely a fade — no jump in the visual centroid.
+    // Loads system-view data for `target`, then runs a cross-fade. The dot
+    // animates from its small galactic size up to TRANSITION_TARGET_DOT_PX
+    // (the zenith-ring radius at default sys scale 0.5), so by the end of the
+    // fade the dot diameter and zenith diameter coincide exactly at galPos.
     function beginGalacticToSystemTransition_(target) {
       var galView = { x: view.x, y: view.y, scale: view.scale };
       var galPos  = worldToScreen(target.x, target.y);
-      var galDotR = galacticSystemRadiusPx_();
+      var galDotInitialPx = galacticSystemRadiusPx_();
       var savedVelocity = zoomVelocity;
       zoomVelocity = 0;
 
-      // System view setup so zenith ring (SYS_JP_R world units) renders at
-      // exactly galDotR pixels, centered on galPos.
-      var sysScale = galDotR / SYS_JP_R;
+      // System view enters at default 0.5× scale, anchored so world (0,0)
+      // (the system's star) renders at galPos. Zenith ring (SYS_JP_R * 0.5
+      // = 475 px) ends up at the same pixel position the growing dot lands.
+      var sysScale = 0.5;
       var sysViewParams = {
         x: (galPos.x - width / 2) / sysScale,
         y: (height / 2 - galPos.y) / sysScale,
@@ -2091,6 +2092,8 @@
             startTime:    performance.now(),
             durationMs:   TRANSITION_FADE_MS,
             galView:      galView,
+            galPos:       galPos,
+            galDotInitialPx: galDotInitialPx,
             sysView:      sysViewParams,
             sysViewData:  bundle,
             sysViewLayout: computeSystemLayout_(bundle),
@@ -2126,15 +2129,27 @@
       var savedSysViewData    = systemViewData;
       var savedSysViewLayout  = systemViewLayout;
 
-      // Galactic layer
+      // 1. Galactic backdrop — fade out. Skip the target system; we redraw
+      // it ourselves below so it can grow continuously into the zenith ring.
       view           = t.galView;
       currentView    = 'galactic';
       systemViewData   = null;
       systemViewLayout = null;
       ctx.globalAlpha = 1 - k;
-      drawGalacticView_();
+      drawGalacticView_(t.target.id);
 
-      // System layer
+      // 2. The target dot — animates from its galactic pixel size up to the
+      // zenith-ring radius (475 px), anchored at galPos. By raw=1 the dot
+      // coincides with the system view's zenith ring exactly.
+      ctx.globalAlpha = 1;
+      var dotR = t.galDotInitialPx + (TRANSITION_TARGET_DOT_PX - t.galDotInitialPx) * k;
+      ctx.beginPath();
+      ctx.arc(t.galPos.x, t.galPos.y, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = '#556';
+      ctx.fill();
+
+      // 3. System view — fade in over the dot. The zenith ring sits at
+      // exactly the same pixel radius the dot just grew to.
       view             = t.sysView;
       currentView      = 'system';
       systemViewData   = t.sysViewData;
