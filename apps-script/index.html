@@ -263,6 +263,10 @@
         if (selected) updatePanel();
         updateNextEventLabel();
       }
+      // [SYS-014] Redraw so the in-system YOU-> marker actually
+      // animates along its transit path each tick (and so the
+      // recharge/prep visuals stay live in galactic view).
+      draw();
     }
 
     function startClock() {
