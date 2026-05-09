@@ -885,6 +885,12 @@
     var hoveredEntity     = null;
     var galacticState     = null;         // saved view + selected when entering system view
 
+    // [SYS-014] Seamless zoom-driven view transitions
+    var GALACTIC_AUTO_ENTER_SCALE = 6;    // zoom-in past this on starmap → drop into system view
+    var SYSTEM_AUTO_EXIT_SCALE    = 0.15; // zoom-out past this in system view → pop to starmap
+    var GALACTIC_RETURN_SCALE     = 4;    // post-exit starmap zoom (kept below auto-enter threshold)
+    var isTransitioningViews      = false;
+
     google.script.run.withSuccessHandler(function(data) {
       systems = data;
       draw();
@@ -961,9 +967,10 @@
       for (var i = 0; i < systems.length; i++) {
         if (Number(systems[i].id) === Number(systemId)) { sysEntry = systems[i]; break; }
       }
-      if (!sysEntry) return;
+      if (!sysEntry) { isTransitioningViews = false; return; }
       if (!sysEntry.hasSystemView) {
         alert('No in-system data for ' + sysEntry.name + ' yet.');
+        isTransitioningViews = false;
         return;
       }
       // Save galactic state to restore on exit
@@ -977,6 +984,7 @@
           if (!bundle || !bundle.system) {
             alert('Failed to load system data for ' + sysEntry.name + '.');
             galacticState = null;
+            isTransitioningViews = false;
             return;
           }
           systemViewData   = bundle;
@@ -993,21 +1001,42 @@
           document.getElementById('btn-terra').style.display = 'none';
           updatePanel();
           draw();
+          isTransitioningViews = false;
         })
         .withFailureHandler(function(err) {
           alert('System view error: ' + (err && err.message ? err.message : err));
           galacticState = null;
+          isTransitioningViews = false;
         })
         .getStarSystemView(sysEntry.id);
     }
 
-    function exitSystemView() {
+    function exitSystemView(opts) {
+      opts = opts || {};
+      var exitedSystemId = systemViewData && systemViewData.system
+        ? systemViewData.system.system_id : null;
       currentView      = 'galactic';
       systemViewData   = null;
       systemViewLayout = null;
       selectedEntity   = null;
       hoveredEntity    = null;
-      if (galacticState) {
+      if (opts.autoZoom) {
+        // Zoom-out exit: center on the system we just left at a moderate scale
+        // that's safely below GALACTIC_AUTO_ENTER_SCALE so we don't immediately
+        // re-enter on the next wheel tick.
+        var s = null;
+        if (exitedSystemId !== null) {
+          for (var i = 0; i < systems.length; i++) {
+            if (Number(systems[i].id) === Number(exitedSystemId)) { s = systems[i]; break; }
+          }
+        }
+        view = s
+          ? { x: -s.x, y: -s.y, scale: GALACTIC_RETURN_SCALE }
+          : { x: 0, y: 0, scale: 0.5 };
+        selected = s || (galacticState && galacticState.selected) || null;
+        hovered  = null;
+        galacticState = null;
+      } else if (galacticState) {
         view     = galacticState.view;
         selected = galacticState.selected;
         hovered  = galacticState.hovered;
@@ -1018,6 +1047,7 @@
       document.getElementById('btn-terra').style.display = '';
       updatePanel();
       draw();
+      isTransitioningViews = false;
     }
 
     function computeSystemLayout_(data) {
@@ -1871,7 +1901,49 @@
       e.preventDefault();
       view.scale *= e.deltaY > 0 ? 0.9 : 1.1;
       view.scale = Math.max(0.05, Math.min(20, view.scale));
+      if (tryAutoTransitionViews_()) return;
       draw();
+    }
+
+    // Returns true if a view transition was triggered (caller should skip its own draw).
+    function tryAutoTransitionViews_() {
+      if (isTransitioningViews) return false;
+
+      if (currentView === 'galactic' && view.scale > GALACTIC_AUTO_ENTER_SCALE) {
+        var center = screenToWorld(width / 2, height / 2);
+        var nearest = null;
+        var bestDist2 = Infinity;
+        for (var i = 0; i < systems.length; i++) {
+          var s = systems[i];
+          if (!s.hasSystemView) continue;
+          if (!isSystemRevealed(s, simYear)) continue;
+          var dx = s.x - center.x;
+          var dy = s.y - center.y;
+          var d2 = dx * dx + dy * dy;
+          if (d2 < bestDist2) { bestDist2 = d2; nearest = s; }
+        }
+        if (nearest) {
+          // Require the candidate to be on-screen (within the visible canvas).
+          var p = worldToScreen(nearest.x, nearest.y);
+          var maxScreen = Math.min(width, height) * 0.5;
+          var pdx = p.x - width / 2;
+          var pdy = p.y - height / 2;
+          if (pdx * pdx + pdy * pdy <= maxScreen * maxScreen) {
+            isTransitioningViews = true;
+            enterSystemView(nearest.id);
+            return true;
+          }
+        }
+        return false;
+      }
+
+      if (currentView === 'system' && view.scale < SYSTEM_AUTO_EXIT_SCALE) {
+        isTransitioningViews = true;
+        exitSystemView({ autoZoom: true });
+        return true;
+      }
+
+      return false;
     }
 
     function centerTerra() {
