@@ -1136,6 +1136,30 @@
       // concentric-band layout for now.
       var hasOrbits = (data.system && Number(data.system.system_id) === 2371);
 
+      // Normalize IDs once. Sheet round-trips occasionally inject leading or
+      // trailing whitespace, which silently breaks any byId lookup of the
+      // canonical ID. Trim every id-like field on every row up front.
+      function _trimIds(rows, fields) {
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          if (!r) continue;
+          for (var j = 0; j < fields.length; j++) {
+            var f = fields[j];
+            if (r[f] !== undefined && r[f] !== null) r[f] = String(r[f]).trim();
+          }
+        }
+      }
+      _trimIds(data.bodies || [],
+        ['body_id', 'system_id', 'orbit_parent_id', 'body_type']);
+      _trimIds(data.jumpPoints || [],
+        ['jump_point_id', 'system_id', 'associated_body_id', 'jump_point_type']);
+      _trimIds(data.infrastructure || [],
+        ['facility_id', 'system_id', 'orbiting_body_id', 'location_type']);
+      _trimIds(data.routes || [],
+        ['route_id', 'system_id',
+         'origin_location_id', 'origin_location_type',
+         'destination_location_id', 'destination_location_type']);
+
       // Locate the star
       var starBody = null;
       for (var i = 0; i < data.bodies.length; i++) {
