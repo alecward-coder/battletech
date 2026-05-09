@@ -176,7 +176,10 @@ function deriveKfDriveState_(ship, currentTick) {
 
 /**
  * Reads or seeds a SaveData row. If missing, creates a row with the
- * given seed value. Returns the (possibly newly-written) numeric value.
+ * given seed value. Returns the cell's raw value (string or number
+ * as the sheet stores it). Callers cast to Number when they need
+ * numeric semantics — wrapping every value in Number() here would
+ * silently turn string ids like "2371-terra" into NaN.
  */
 function ensureSaveRow_(sheet, key, seedValue) {
   var row = findSaveRow(sheet, key);
@@ -186,7 +189,7 @@ function ensureSaveRow_(sheet, key, seedValue) {
     sheet.getRange(row, 2).setValue(seedValue);
     return seedValue;
   }
-  return Number(sheet.getRange(row, 2).getValue());
+  return sheet.getRange(row, 2).getValue();
 }
 
 /**
