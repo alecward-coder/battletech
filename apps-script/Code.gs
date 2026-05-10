@@ -242,6 +242,14 @@ function getPlayerShip() {
   var transitTarget = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
   var transitKind   = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
   var transitEnd    = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  // [SPEC-ORBITAL-INTERCEPT-001] Intercept-course bookkeeping: origin
+  // position frozen at transit start, predicted intercept point frozen
+  // at transit start, and the start tick. All zero when idle.
+  var transitStart = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_START_TICK', 0);
+  var transitOX    = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_ORIGIN_X',   0);
+  var transitOY    = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_ORIGIN_Y',   0);
+  var transitIX    = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_INTERCEPT_X', 0);
+  var transitIY    = ensureSaveRow_(sheet, 'PLAYER_SHIP_TRANSIT_INTERCEPT_Y', 0);
 
   var ship = {
     systemId:            Number(systemId),
@@ -253,6 +261,11 @@ function getPlayerShip() {
     transitTargetId:     transitTarget,
     transitTargetKind:   transitKind,
     transitEndTick:      Number(transitEnd),
+    transitStartTick:    Number(transitStart) || 0,
+    transitOriginX:      Number(transitOX) || 0,
+    transitOriginY:      Number(transitOY) || 0,
+    transitInterceptX:   Number(transitIX) || 0,
+    transitInterceptY:   Number(transitIY) || 0,
     jumpRangeLy:         JUMP_RANGE_LY,
     rechargeTicks:       RECHARGE_TICKS,
     jumpPrepTicks:       JUMP_PREP_TICKS
@@ -374,7 +387,7 @@ function _findRoute_(systemId, originId, destId) {
  * Returns { ok, ship, routeId|null, transitTicks } or
  *         { ok:false, reason, ... }.
  */
-function beginInSystemTransit(targetLocationId, currentTick, hoursOverride) {
+function beginInSystemTransit(targetLocationId, currentTick, hoursOverride, intercept) {
   var nowTick = Number(currentTick);
   var ship    = getPlayerShip();
 
@@ -408,6 +421,20 @@ function beginInSystemTransit(targetLocationId, currentTick, hoursOverride) {
   writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', targetLocationId);
   writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   _locationKind_(targetLocationId));
   writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    nowTick + transitTicks);
+
+  // [SPEC-ORBITAL-INTERCEPT-001] Freeze the origin position and the
+  // predicted intercept point computed by the client. Falls back to
+  // zeroes when the client hasn't supplied them; the client's renderer
+  // treats all-zero as "no intercept data, draw legacy direct path."
+  var ox = (intercept && Number(intercept.originX))    ? Number(intercept.originX)    : 0;
+  var oy = (intercept && Number(intercept.originY))    ? Number(intercept.originY)    : 0;
+  var ix = (intercept && Number(intercept.interceptX)) ? Number(intercept.interceptX) : 0;
+  var iy = (intercept && Number(intercept.interceptY)) ? Number(intercept.interceptY) : 0;
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_START_TICK', nowTick);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_ORIGIN_X',   ox);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_ORIGIN_Y',   oy);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_INTERCEPT_X', ix);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_INTERCEPT_Y', iy);
   saveSimTime(nowTick);
 
   return {
@@ -416,6 +443,17 @@ function beginInSystemTransit(targetLocationId, currentTick, hoursOverride) {
     routeId: route ? route.route_id : null,
     transitTicks: transitTicks
   };
+}
+
+function _clearTransitFields_(sheet) {
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_START_TICK', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_ORIGIN_X',   0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_ORIGIN_Y',   0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_INTERCEPT_X', 0);
+  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_INTERCEPT_Y', 0);
 }
 
 /**
@@ -433,9 +471,7 @@ function finalizeTransit(currentTick) {
   var sheet = getSaveDataSheet();
   writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_ID',    ship.transitTargetId);
   writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_KIND',  ship.transitTargetKind);
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  _clearTransitFields_(sheet);
   return { ok: true, ship: getPlayerShip(), finalized: true };
 }
 
@@ -446,9 +482,7 @@ function abortInSystemTransit() {
     return { ok: false, reason: 'not_transiting' };
   }
   var sheet = getSaveDataSheet();
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  _clearTransitFields_(sheet);
   return { ok: true, ship: getPlayerShip() };
 }
 
@@ -475,9 +509,7 @@ function setPlayerLocation(systemId) {
   writeSaveKey_(sheet, 'PLAYER_SHIP_SYSTEM_ID',      Number(systemId));
   writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  _clearTransitFields_(sheet);
   var arrivalLoc = _systemPrimaryInhabitedBody_(systemId) ||
                    _systemDefaultArrival_(systemId) || '';
   writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_ID',    arrivalLoc);
@@ -592,9 +624,7 @@ function commitJump(currentTick) {
   writeSaveKey_(sheet, 'PLAYER_SHIP_LAST_JUMP',      nowTick);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  _clearTransitFields_(sheet);
   writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_ID',    arrivalLoc);
   writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_KIND',  arrivalKind);
   saveSimTime(nowTick);
@@ -640,9 +670,7 @@ function emergencyJump(targetSystemId, currentTick) {
   writeSaveKey_(sheet, 'PLAYER_SHIP_LAST_JUMP',      nowTick);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PENDING_TARGET', 0);
   writeSaveKey_(sheet, 'PLAYER_SHIP_PREP_END',       0);
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_TARGET', 0);
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_KIND',   '');
-  writeSaveKey_(sheet, 'PLAYER_SHIP_TRANSIT_END',    0);
+  _clearTransitFields_(sheet);
   writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_ID',    arrivalLoc);
   writeSaveKey_(sheet, 'PLAYER_SHIP_LOCATION_KIND',  arrivalKind);
   saveSimTime(nowTick);

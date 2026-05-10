@@ -2005,21 +2005,88 @@
         drawEntity_(e, p, isSel, isHov);
       }
 
-      // [SYS-014] Player ship marker at actual locationId, plus a
-      // dashed line + interpolated marker during transit.
+      // [SYS-014 / SPEC-ORBITAL-INTERCEPT-001] Ship marker + transit
+      // visualization. During transit the ship aims at a frozen intercept
+      // point — where the destination body was predicted to be at ETA —
+      // not at the body's live position. The faint reference line still
+      // points at the body's current position so the player can see what
+      // they targeted; the strong course line points at the intercept.
       if (ship && systemViewData &&
           Number(ship.systemId) === Number(systemViewData.system.system_id)) {
         var rawLoc    = ship.locationId    ? systemViewLayout.byId[ship.locationId]    : null;
         var rawTarget = (ship.transitState === 'TRANSITING' && ship.transitTargetId)
                           ? systemViewLayout.byId[ship.transitTargetId] : null;
-        // Anchor sub-orbital locations (moon, station, pirate JP) to their
-        // parent planet so the system view shows ship-near-Mars instead of
-        // ship-on-invisible-Phobos.
         var locEnt    = heliocentricAncestor_(systemViewLayout, rawLoc);
         var targetEnt = heliocentricAncestor_(systemViewLayout, rawTarget);
+        var hasIntercept = (ship.transitState === 'TRANSITING') && _hasIntercept_(ship);
 
-        if (targetEnt && locEnt) {
-          // Draw transit path as a dashed line
+        if (hasIntercept && targetEnt) {
+          var ox = Number(ship.transitOriginX);
+          var oy = Number(ship.transitOriginY);
+          var ix = Number(ship.transitInterceptX);
+          var iy = Number(ship.transitInterceptY);
+          var frac = _transitProgress_(ship);
+          var sx = ox + (ix - ox) * frac;
+          var sy = oy + (iy - oy) * frac;
+
+          var sp  = worldToScreen(sx, sy);
+          var ipt = worldToScreen(ix, iy);
+          var tpt = worldToScreen(targetEnt.x, targetEnt.y);
+
+          // 1. Faint reference line: ship → destination body's current pos
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,0,170,0.25)';
+          ctx.lineWidth = 1;
+          if (ctx.setLineDash) ctx.setLineDash([2, 4]);
+          ctx.beginPath();
+          ctx.moveTo(sp.x, sp.y);
+          ctx.lineTo(tpt.x, tpt.y);
+          ctx.stroke();
+          if (ctx.setLineDash) ctx.setLineDash([]);
+          ctx.restore();
+
+          // 2. Strong course line: ship → intercept point (remaining course)
+          ctx.save();
+          ctx.strokeStyle = '#f0a';
+          ctx.lineWidth = 1.5;
+          if (ctx.setLineDash) ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.moveTo(sp.x, sp.y);
+          ctx.lineTo(ipt.x, ipt.y);
+          ctx.stroke();
+          if (ctx.setLineDash) ctx.setLineDash([]);
+          ctx.restore();
+
+          // 3. Ghost arrival marker at the intercept point
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,0,170,0.65)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(ipt.x, ipt.y, 8, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(ipt.x - 5, ipt.y); ctx.lineTo(ipt.x + 5, ipt.y);
+          ctx.moveTo(ipt.x, ipt.y - 5); ctx.lineTo(ipt.x, ipt.y + 5);
+          ctx.stroke();
+          ctx.fillStyle = 'rgba(255,0,170,0.8)';
+          ctx.font = '9px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText((targetEnt.name || 'target') + ' ETA',
+            ipt.x, ipt.y - 12);
+          ctx.restore();
+
+          // 4. Ship marker at the interpolated position
+          ctx.fillStyle = '#f0a';
+          ctx.beginPath(); ctx.arc(sp.x, sp.y, 5, 0, Math.PI * 2); ctx.fill();
+          ctx.font = '10px monospace';
+          ctx.textAlign = 'left';
+          var remTicks = Math.max(0, Number(ship.transitEndTick) - simTick);
+          ctx.fillText('YOU → ' + (targetEnt.name || ship.transitTargetId) +
+            '  ETA ' + formatTicks(remTicks),
+            sp.x + 7, sp.y + 4);
+        } else if (targetEnt && locEnt) {
+          // Legacy direct-path fallback (transits started before the
+          // intercept fields existed in the ship record).
           var p1 = worldToScreen(locEnt.x, locEnt.y);
           var p2 = worldToScreen(targetEnt.x, targetEnt.y);
           ctx.save();
@@ -2032,43 +2099,26 @@
           ctx.stroke();
           if (ctx.setLineDash) ctx.setLineDash([]);
           ctx.restore();
-
-          // Interpolated ship position based on transit progress
-          var transitTotal = Math.max(1, Number(ship.transitEndTick) -
-            (simTick - Math.max(0, Number(ship.transitEndTick) - simTick)));
-          // Simpler: derive total from target.transitEndTick and an
-          // assumed origin "transit start". We don't store start, but
-          // we know remaining + total = (targetTick - origin start);
-          // approximate by fraction = clamp(elapsed / route hours).
-          var totalTicks  = Number(ship.transitEndTick) > 0
-            ? Math.max(1, Number(ship.transitEndTick) - (simTick - 1))
-            : 1;
-          var remaining = Math.max(0, Number(ship.transitEndTick) - simTick);
-          // Total ticks: prefer the same estimate the panel used when
-          // the player started this transit (route time if defined;
-          // otherwise layout-distance estimate).
-          var totalH    = estimateTransitHoursClient_(ship.locationId, ship.transitTargetId);
-          var totalT    = Math.round(totalH * TICKS_PER_HOUR);
-          var frac      = totalT > 0
-            ? Math.max(0, Math.min(1, 1 - (remaining / totalT)))
-            : 0.5;
-
-          var ix = locEnt.x + (targetEnt.x - locEnt.x) * frac;
-          var iy = locEnt.y + (targetEnt.y - locEnt.y) * frac;
-          var ip = worldToScreen(ix, iy);
+          var totalH = estimateTransitHoursClient_(ship.locationId, ship.transitTargetId);
+          var totalT = Math.max(1, Math.round(totalH * TICKS_PER_HOUR));
+          var rem    = Math.max(0, Number(ship.transitEndTick) - simTick);
+          var frac2  = Math.max(0, Math.min(1, 1 - (rem / totalT)));
+          var lx = locEnt.x + (targetEnt.x - locEnt.x) * frac2;
+          var ly = locEnt.y + (targetEnt.y - locEnt.y) * frac2;
+          var lp = worldToScreen(lx, ly);
           ctx.fillStyle = '#f0a';
-          ctx.beginPath(); ctx.arc(ip.x, ip.y, 5, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(lp.x, lp.y, 5, 0, Math.PI * 2); ctx.fill();
           ctx.font = '10px monospace';
           ctx.textAlign = 'left';
-          ctx.fillText('YOU →', ip.x + 7, ip.y + 4);
+          ctx.fillText('YOU →', lp.x + 7, lp.y + 4);
         } else if (locEnt) {
           // Idle: ship parked at the location
-          var sp = worldToScreen(locEnt.x + 16, locEnt.y + 16);
+          var sp2 = worldToScreen(locEnt.x + 16, locEnt.y + 16);
           ctx.fillStyle = '#f0a';
-          ctx.beginPath(); ctx.arc(sp.x, sp.y, 4, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(sp2.x, sp2.y, 4, 0, Math.PI * 2); ctx.fill();
           ctx.font = '10px monospace';
           ctx.textAlign = 'left';
-          ctx.fillText('YOU', sp.x + 6, sp.y + 4);
+          ctx.fillText('YOU', sp2.x + 6, sp2.y + 4);
         }
       }
 
@@ -2596,6 +2646,10 @@
 
     function beginInSystemTransitAction_(targetLocationId, hoursOverride) {
       if (!ship) return;
+      // [SPEC-ORBITAL-INTERCEPT-001] Compute the intercept payload before
+      // hitting the server so the future destination position is frozen
+      // at transit start using the same orbital math the renderer uses.
+      var intercept = _computeIntercept_(ship.locationId, targetLocationId, hoursOverride || 0);
       google.script.run
         .withSuccessHandler(function(result) {
           if (result.ok) {
@@ -2613,7 +2667,95 @@
           alert('Transit error: ' + err.message);
           updatePanel();
         })
-        .beginInSystemTransit(targetLocationId, simTick, hoursOverride || 0);
+        .beginInSystemTransit(targetLocationId, simTick, hoursOverride || 0, intercept);
+    }
+
+    // ─── SPEC-ORBITAL-INTERCEPT-001 helpers ─────────────────────
+    // Computes the destination body's position at currentSimTime + travel
+    // time using its orbital elements; returns { originX, originY,
+    // interceptX, interceptY } in system-view world coordinates. Returns
+    // null when we lack the data — server falls back to legacy direct
+    // path in that case.
+    function _computeIntercept_(originId, targetId, hoursOverride) {
+      if (!systemViewLayout || !systemViewLayout.byId) return null;
+      var oEnt = systemViewLayout.byId[originId];
+      if (!oEnt) return null;
+      var hours = Number(hoursOverride) > 0
+        ? Number(hoursOverride)
+        : estimateTransitHoursClient_(originId, targetId);
+      if (!isFinite(hours) || hours <= 0) hours = 120;
+      var arrivalDays = daysSinceJ2000_() + (hours / 24);
+      var pred = _predictBodyPosition_(targetId, arrivalDays);
+      if (!pred) return null;
+      return {
+        originX:    oEnt.x,
+        originY:    oEnt.y,
+        interceptX: pred.x,
+        interceptY: pred.y
+      };
+    }
+
+    // Predicts an entity's system-view world position at a target J2000
+    // day count, using its orbital elements (and recursively its parent's).
+    // Falls back to the entity's current position when no orbit data is
+    // available — that's correct for static bodies (jump points, deep-
+    // space stations, the star).
+    function _predictBodyPosition_(entId, atJ2000Days) {
+      if (!systemViewLayout || !systemViewLayout.byId) return null;
+      var ent = systemViewLayout.byId[entId];
+      if (!ent) return null;
+      var DEG = Math.PI / 180;
+      // Planet around the star
+      if (ent.orbit) {
+        var L = (ent.orbit.L0 + 360 * (atJ2000Days / ent.orbit.period)) * DEG;
+        var R = ent.orbit.a_au * SOL_AU_PX;
+        return { x: R * Math.cos(L), y: R * Math.sin(L) };
+      }
+      // Moon around its parent
+      if (ent.moonOrbit) {
+        var parent = _predictBodyPosition_(ent.moonOrbit.parent, atJ2000Days);
+        if (!parent) return null;
+        var Lm = (ent.moonOrbit.L0 + 360 * (atJ2000Days / ent.moonOrbit.period)) * DEG;
+        var Rm = ent.moonOrbit.a_au * SOL_AU_PX;
+        return { x: parent.x + Rm * Math.cos(Lm), y: parent.y + Rm * Math.sin(Lm) };
+      }
+      // Parent-relative entity (pirate JPs, infrastructure tied to a body)
+      if (ent.parentRelative) {
+        var pp = _predictBodyPosition_(ent.parentRelative.parentId, atJ2000Days);
+        if (!pp) return null;
+        if (ent.parentRelative.mode === 'pirate') {
+          var pAng    = Math.atan2(pp.y, pp.x);
+          var pRadius = Math.sqrt(pp.x * pp.x + pp.y * pp.y);
+          var rad = ent.parentRelative.radial;
+          var a   = ent.parentRelative.angular;
+          return { x: (pRadius + rad) * Math.cos(pAng + a),
+                   y: (pRadius + rad) * Math.sin(pAng + a) };
+        }
+        if (ent.parentRelative.mode === 'cartesian') {
+          return { x: pp.x + ent.parentRelative.ox, y: pp.y + ent.parentRelative.oy };
+        }
+      }
+      // Static (star, system-level JPs, deep-space infra)
+      return { x: ent.x, y: ent.y };
+    }
+
+    function _hasIntercept_(s) {
+      if (!s) return false;
+      if (Number(s.transitStartTick) <= 0) return false;
+      // Treat all-zero as "no intercept stored" (legacy transits).
+      if (Number(s.transitOriginX) === 0 && Number(s.transitOriginY) === 0 &&
+          Number(s.transitInterceptX) === 0 && Number(s.transitInterceptY) === 0) {
+        return false;
+      }
+      return true;
+    }
+
+    function _transitProgress_(s) {
+      if (!s) return 0;
+      var start = Number(s.transitStartTick) || 0;
+      var end   = Number(s.transitEndTick)   || 0;
+      if (end <= start) return 0;
+      return Math.max(0, Math.min(1, (simTick - start) / (end - start)));
     }
 
     function abortInSystemTransit_() {
