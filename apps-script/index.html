@@ -1827,33 +1827,129 @@
       var centerSys = systemViewLayout && systemViewLayout.byId
                         ? systemViewLayout.byId[orbitalLayout.center.id] : null;
 
-      // In-frame transit: both endpoints in this orbital frame → full
-      // dashed path + interpolated marker (matches system view convention).
-      if (orbLoc && orbTarget) {
-        var p1 = worldToScreen(orbLoc.x, orbLoc.y);
-        var p2 = worldToScreen(orbTarget.x, orbTarget.y);
-        ctx.save();
-        ctx.strokeStyle = '#f0a';
-        ctx.lineWidth = 1.5;
-        if (ctx.setLineDash) ctx.setLineDash([6, 4]);
-        ctx.beginPath();
-        ctx.moveTo(p1.x, p1.y);
-        ctx.lineTo(p2.x, p2.y);
-        ctx.stroke();
-        if (ctx.setLineDash) ctx.setLineDash([]);
-        ctx.restore();
+      // ── In transit: render the intercept course in this orbital frame ──
+      // The intercept point and origin are frozen in system-frame coords on
+      // the ship record; we project them into the orbital (body-centric)
+      // frame each draw by subtracting the central body's current system
+      // position. That gives a stable arrival point and faint reference line
+      // even when the ship is far outside the moon-cloud scale.
+      if (ship.transitState === 'TRANSITING' && centerSys) {
+        var intercept = _hasIntercept_(ship)
+          ? {
+              originX:    Number(ship.transitOriginX),
+              originY:    Number(ship.transitOriginY),
+              interceptX: Number(ship.transitInterceptX),
+              interceptY: Number(ship.transitInterceptY),
+              startTick:  Number(ship.transitStartTick),
+              endTick:    Number(ship.transitEndTick)
+            }
+          : _liveIntercept_(ship);
+        if (intercept) {
+          var frac = (intercept.endTick > intercept.startTick)
+            ? Math.max(0, Math.min(1,
+                (simTick - intercept.startTick) /
+                (intercept.endTick - intercept.startTick)))
+            : 0;
+          // Ship current system-frame position by interpolation.
+          var sx = intercept.originX + (intercept.interceptX - intercept.originX) * frac;
+          var sy = intercept.originY + (intercept.interceptY - intercept.originY) * frac;
+          // Convert each system-frame point into orbital frame (body-centric).
+          var shipOrb     = { x: sx - centerSys.x,            y: sy - centerSys.y };
+          var interceptOrb= { x: intercept.interceptX - centerSys.x,
+                              y: intercept.interceptY - centerSys.y };
+          var targetSysNow = sysTarget || null;
+          var targetOrb    = targetSysNow
+            ? { x: targetSysNow.x - centerSys.x, y: targetSysNow.y - centerSys.y }
+            : null;
 
-        var totalH    = estimateTransitHoursClient_(locId, targetId);
-        var totalT    = Math.max(1, Math.round(totalH * TICKS_PER_HOUR));
-        var remaining = Math.max(0, Number(ship.transitEndTick) - simTick);
-        var frac      = Math.max(0, Math.min(1, 1 - (remaining / totalT)));
-        var ix = orbLoc.x + (orbTarget.x - orbLoc.x) * frac;
-        var iy = orbLoc.y + (orbTarget.y - orbLoc.y) * frac;
-        var ip = worldToScreen(ix, iy);
-        var theta = Math.atan2(p2.y - p1.y, p2.x - p1.x);
-        _drawShipReticle_(ip.x, ip.y, 'YOU → ' + (orbTarget.name || targetId), true, theta);
-        return;
+          // Helper: project an orbital-frame point onto canvas; clamp to a
+          // canvas-edge marker when off-screen.
+          function _projectOrClamp(orb, margin) {
+            var p = worldToScreen(orb.x, orb.y);
+            if (p.x >= margin && p.x <= width - margin &&
+                p.y >= margin && p.y <= height - margin) {
+              return { x: p.x, y: p.y, edge: false, theta: 0 };
+            }
+            var len = Math.sqrt(orb.x * orb.x + orb.y * orb.y);
+            if (len === 0) return { x: width/2, y: height/2, edge: false, theta: 0 };
+            var nx = orb.x / len, ny = orb.y / len;
+            var halfW = width  / 2 - margin;
+            var halfH = height / 2 - margin;
+            var t = Math.min(
+              Math.abs(nx) > 1e-6 ? Math.abs(halfW / nx) : Infinity,
+              Math.abs(ny) > 1e-6 ? Math.abs(halfH / ny) : Infinity
+            );
+            return {
+              x: width/2 + t * nx,
+              y: height/2 - t * ny,
+              edge: true,
+              theta: Math.atan2(-ny, nx)
+            };
+          }
+
+          var sShip      = _projectOrClamp(shipOrb,      60);
+          var sIntercept = _projectOrClamp(interceptOrb, 30);
+          var sTarget    = targetOrb ? _projectOrClamp(targetOrb, 30) : null;
+
+          // 1. Faint reference line: ship → destination body's current pos
+          if (sTarget) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255,0,170,0.25)';
+            ctx.lineWidth = 1;
+            if (ctx.setLineDash) ctx.setLineDash([2, 4]);
+            ctx.beginPath();
+            ctx.moveTo(sShip.x, sShip.y);
+            ctx.lineTo(sTarget.x, sTarget.y);
+            ctx.stroke();
+            if (ctx.setLineDash) ctx.setLineDash([]);
+            ctx.restore();
+          }
+
+          // 2. Strong course line: ship → intercept point
+          ctx.save();
+          ctx.strokeStyle = '#f0a';
+          ctx.lineWidth = 1.5;
+          if (ctx.setLineDash) ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.moveTo(sShip.x, sShip.y);
+          ctx.lineTo(sIntercept.x, sIntercept.y);
+          ctx.stroke();
+          if (ctx.setLineDash) ctx.setLineDash([]);
+          ctx.restore();
+
+          // 3. Ghost arrival marker at the intercept (crosshair)
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,0,170,0.65)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(sIntercept.x, sIntercept.y, 8, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(sIntercept.x - 5, sIntercept.y); ctx.lineTo(sIntercept.x + 5, sIntercept.y);
+          ctx.moveTo(sIntercept.x, sIntercept.y - 5); ctx.lineTo(sIntercept.x, sIntercept.y + 5);
+          ctx.stroke();
+          ctx.fillStyle = 'rgba(255,0,170,0.8)';
+          ctx.font = '9px monospace';
+          ctx.textAlign = 'center';
+          var tName = (sysTarget && sysTarget.name) ||
+                      (orbTarget && orbTarget.name) || targetId || 'target';
+          ctx.fillText(tName + ' ETA', sIntercept.x, sIntercept.y - 12);
+          ctx.restore();
+
+          // 4. Ship reticle (edge or on-canvas)
+          var shipLabel = 'YOU → ' + tName +
+            '  ETA ' + formatTicks(Math.max(0, Number(ship.transitEndTick) - simTick));
+          _drawShipReticle_(sShip.x, sShip.y, shipLabel, sShip.edge, sShip.theta);
+
+          // Overlay
+          var oLabel = 'SHIP: ' + (sysLoc && sysLoc.name ? sysLoc.name : (locId || '?'));
+          oLabel += ' → ' + tName + '  (intercept' + (intercept.live ? ' / live' : '') + ')';
+          _drawOrbitalShipOverlay_(oLabel);
+          return;
+        }
       }
+
+      // ── Idle / no intercept data fallback ──
 
       // Static at an in-frame entity (the central body, satellite, etc.)
       if (orbLoc) {
