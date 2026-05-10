@@ -31,8 +31,10 @@
     #simClock { font-size: 12px; color: #8cf; letter-spacing: 0.05em; }
     #simClockLabel { font-size: 10px; color: #445; margin-right: 6px; }
     #systemCount { font-size: 10px; color: #556; margin-left: 12px; }
-    button { background: #222; border: 1px solid #444; color: #aaa; padding: 4px 10px; cursor: pointer; font-family: monospace; }
+    button { background: #222; border: 1px solid #444; color: #aaa; padding: 4px 10px; cursor: pointer; font-family: monospace; transition: background 60ms linear, color 60ms linear, border-color 60ms linear; }
     button:hover { background: #333; }
+    button:active:not(:disabled) { background: #0fa; color: #000; border-color: #0fa; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
 
     /* SYS-013 wait bar */
     #waitBar { background: #0f0f17; padding: 6px 12px; border-bottom: 1px solid #2a2a36; display: flex; align-items: center; gap: 6px; font-family: monospace; }
@@ -1752,69 +1754,143 @@
         drawEntity_(e, p, isSel, isHov);
       }
 
-      // Player ship marker. Two cases:
-      //   1. Ship is at an entity that lives in this orbital frame (the
-      //      central body, a satellite, a station, a pirate JP) — draw the
-      //      marker right at that entity.
-      //   2. Ship is elsewhere in the same system (e.g. at Sol Zenith JP,
-      //      or in transit to another planet) — draw an edge marker on
-      //      the canvas border pointing toward where the ship actually is,
-      //      with the location name underneath.
-      if (ship && systemViewData &&
-          Number(ship.systemId) === Number(systemViewData.system.system_id)) {
-        var locId  = ship.locationId;
-        var orbEnt = locId ? orbitalLayout.byId[locId] : null;
-        if (orbEnt) {
-          var p = worldToScreen(orbEnt.x, orbEnt.y);
-          ctx.strokeStyle = '#f0a';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
-          ctx.stroke();
-        } else if (locId && systemViewLayout && systemViewLayout.byId) {
-          var shipSysEnt   = systemViewLayout.byId[locId];
-          var centerSysEnt = systemViewLayout.byId[orbitalLayout.center.id];
-          if (shipSysEnt && centerSysEnt) {
-            var dxs = shipSysEnt.x - centerSysEnt.x;
-            var dys = shipSysEnt.y - centerSysEnt.y;
-            var len = Math.sqrt(dxs*dxs + dys*dys);
-            if (len > 0) {
-              var nx = dxs / len, ny = dys / len;
-              var margin = 50;
-              var halfW  = width  / 2 - margin;
-              var halfH  = height / 2 - margin;
-              var t = Math.min(
-                Math.abs(nx) > 1e-6 ? Math.abs(halfW / nx) : Infinity,
-                Math.abs(ny) > 1e-6 ? Math.abs(halfH / ny) : Infinity
-              );
-              var ex = width  / 2 + t * nx;
-              var ey = height / 2 - t * ny; // y-flip: world y up = screen y down
-              ctx.strokeStyle = '#f0a';
-              ctx.fillStyle   = '#f0a';
-              ctx.lineWidth   = 2;
-              // Outer ring
-              ctx.beginPath();
-              ctx.arc(ex, ey, 10, 0, Math.PI * 2);
-              ctx.stroke();
-              // Inner arrowhead pointing outward in the same direction
-              var ah = 6;
-              var theta = Math.atan2(-ny, nx); // screen-space direction
-              ctx.beginPath();
-              ctx.moveTo(ex + Math.cos(theta) * ah,                   ey + Math.sin(theta) * ah);
-              ctx.lineTo(ex + Math.cos(theta + 2.5) * ah,             ey + Math.sin(theta + 2.5) * ah);
-              ctx.lineTo(ex + Math.cos(theta - 2.5) * ah,             ey + Math.sin(theta - 2.5) * ah);
-              ctx.closePath();
-              ctx.fill();
-              // Label
-              ctx.font = '10px monospace';
-              ctx.textAlign = 'center';
-              ctx.fillText('ship: ' + (shipSysEnt.name || locId), ex, ey + 24);
-            }
-          }
-        }
-      }
+      // Player ship marker — visible from anywhere in the same system, with
+      // a corner-overlay fallback that always tells the player where the
+      // ship is (including cross-system).
+      drawOrbitalShipMarker_();
 
       document.getElementById('zoom').textContent = Math.round(view.scale * 100) + '%';
+    }
+
+    // Draws a high-contrast reticle for the ship: outer white halo, inner
+    // magenta ring, label below.
+    function _drawShipReticle_(x, y, label, includeChevron, chevronAngle) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth   = 3.5;
+      ctx.beginPath();
+      ctx.arc(x, y, 11, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = '#f0a';
+      ctx.lineWidth   = 2;
+      ctx.beginPath();
+      ctx.arc(x, y, 11, 0, Math.PI * 2);
+      ctx.stroke();
+      if (includeChevron) {
+        ctx.fillStyle = '#f0a';
+        var ah = 7;
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(chevronAngle) * ah,
+                   y + Math.sin(chevronAngle) * ah);
+        ctx.lineTo(x + Math.cos(chevronAngle + 2.5) * ah,
+                   y + Math.sin(chevronAngle + 2.5) * ah);
+        ctx.lineTo(x + Math.cos(chevronAngle - 2.5) * ah,
+                   y + Math.sin(chevronAngle - 2.5) * ah);
+        ctx.closePath();
+        ctx.fill();
+      }
+      if (label) {
+        ctx.fillStyle = '#f0a';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, x, y + 24);
+      }
+    }
+
+    function _drawOrbitalShipOverlay_(text) {
+      var pad = 10;
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(255,0,170,0.15)';
+      ctx.fillRect(pad, pad, ctx.measureText(text).width + 16, 22);
+      ctx.fillStyle = '#f0a';
+      ctx.fillText(text, pad + 8, pad + 15);
+    }
+
+    function drawOrbitalShipMarker_() {
+      if (!ship || !systemViewData || !orbitalLayout) return;
+      var sameSystem = Number(ship.systemId) === Number(systemViewData.system.system_id);
+      var locId    = ship.locationId;
+      var targetId = (ship.transitState === 'TRANSITING') ? ship.transitTargetId : null;
+
+      // Cross-system: just an overlay so the player isn't left guessing.
+      if (!sameSystem) {
+        _drawOrbitalShipOverlay_('SHIP: in another system (id ' + ship.systemId + ')');
+        return;
+      }
+
+      var orbLoc    = locId    ? orbitalLayout.byId[locId]    : null;
+      var orbTarget = targetId ? orbitalLayout.byId[targetId] : null;
+      var sysLoc    = locId    && systemViewLayout && systemViewLayout.byId
+                        ? systemViewLayout.byId[locId]    : null;
+      var sysTarget = targetId && systemViewLayout && systemViewLayout.byId
+                        ? systemViewLayout.byId[targetId] : null;
+      var centerSys = systemViewLayout && systemViewLayout.byId
+                        ? systemViewLayout.byId[orbitalLayout.center.id] : null;
+
+      // In-frame transit: both endpoints in this orbital frame → full
+      // dashed path + interpolated marker (matches system view convention).
+      if (orbLoc && orbTarget) {
+        var p1 = worldToScreen(orbLoc.x, orbLoc.y);
+        var p2 = worldToScreen(orbTarget.x, orbTarget.y);
+        ctx.save();
+        ctx.strokeStyle = '#f0a';
+        ctx.lineWidth = 1.5;
+        if (ctx.setLineDash) ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+        if (ctx.setLineDash) ctx.setLineDash([]);
+        ctx.restore();
+
+        var totalH    = estimateTransitHoursClient_(locId, targetId);
+        var totalT    = Math.max(1, Math.round(totalH * TICKS_PER_HOUR));
+        var remaining = Math.max(0, Number(ship.transitEndTick) - simTick);
+        var frac      = Math.max(0, Math.min(1, 1 - (remaining / totalT)));
+        var ix = orbLoc.x + (orbTarget.x - orbLoc.x) * frac;
+        var iy = orbLoc.y + (orbTarget.y - orbLoc.y) * frac;
+        var ip = worldToScreen(ix, iy);
+        var theta = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+        _drawShipReticle_(ip.x, ip.y, 'YOU → ' + (orbTarget.name || targetId), true, theta);
+        return;
+      }
+
+      // Static at an in-frame entity (the central body, satellite, etc.)
+      if (orbLoc) {
+        var p = worldToScreen(orbLoc.x, orbLoc.y);
+        _drawShipReticle_(p.x, p.y, 'YOU', false, 0);
+        _drawOrbitalShipOverlay_('SHIP: ' + (orbLoc.name || locId));
+        return;
+      }
+
+      // Out of this frame but still in this system. Edge marker pointing
+      // toward the actual location, plus a corner overlay.
+      if (sysLoc && centerSys) {
+        var dxs = sysLoc.x - centerSys.x;
+        var dys = sysLoc.y - centerSys.y;
+        var len = Math.sqrt(dxs*dxs + dys*dys);
+        if (len > 0) {
+          var nx = dxs / len, ny = dys / len;
+          var margin = 60;
+          var halfW  = width  / 2 - margin;
+          var halfH  = height / 2 - margin;
+          var t = Math.min(
+            Math.abs(nx) > 1e-6 ? Math.abs(halfW / nx) : Infinity,
+            Math.abs(ny) > 1e-6 ? Math.abs(halfH / ny) : Infinity
+          );
+          var ex = width  / 2 + t * nx;
+          var ey = height / 2 - t * ny; // y-flip
+          var theta = Math.atan2(-ny, nx);
+          _drawShipReticle_(ex, ey, sysLoc.name || locId, true, theta);
+        }
+        var label = 'SHIP: ' + (sysLoc.name || locId);
+        if (sysTarget) label += ' → ' + (sysTarget.name || targetId);
+        _drawOrbitalShipOverlay_(label);
+        return;
+      }
+
+      // Couldn't resolve location at all — at least say so.
+      _drawOrbitalShipOverlay_('SHIP: ' + (locId || 'unknown location'));
     }
 
     function findEntityAt(sx, sy) {
