@@ -1024,21 +1024,63 @@
       '2371-neptune': { period: 60182,     L0: 304.88003, a_au: 30.069 }
     };
     var SOL_MOON_ORBITS = {
-      // L0 below is a placeholder spread, not astronomically grounded —
-      // real moon ephemerides drift relative to a global epoch and aren't
-      // worth the complexity for visual purposes. Periods are real.
-      '2371-luna':     { period: 27.3217,  L0:   0, parent: '2371-terra',   a_px: 22 },
-      '2371-phobos':   { period: 0.31891,  L0:   0, parent: '2371-mars',    a_px: 14 },
-      '2371-deimos':   { period: 1.26244,  L0:  90, parent: '2371-mars',    a_px: 26 },
-      '2371-io':       { period: 1.76914,  L0:   0, parent: '2371-jupiter', a_px: 14 },
-      '2371-europa':   { period: 3.55118,  L0:  60, parent: '2371-jupiter', a_px: 22 },
-      '2371-ganymede': { period: 7.15455,  L0: 120, parent: '2371-jupiter', a_px: 32 },
-      '2371-callisto': { period: 16.6890,  L0: 200, parent: '2371-jupiter', a_px: 44 },
-      '2371-titan':    { period: 15.9454,  L0:   0, parent: '2371-saturn',  a_px: 22 }
+      // Real semi-major axes in AU. Periods are sidereal Earth days. L0 is
+      // a placeholder spread (not astronomically grounded); real moon
+      // ephemerides drift relative to a global epoch and aren't worth the
+      // complexity for visual purposes. Used as a transitional fallback
+      // until the spreadsheet rows carry these fields directly.
+      '2371-luna':     { period: 27.3217,  L0:   0, parent: '2371-terra',   a_au: 0.002570 },
+      '2371-phobos':   { period: 0.31891,  L0:   0, parent: '2371-mars',    a_au: 0.0000627 },
+      '2371-deimos':   { period: 1.26244,  L0:  90, parent: '2371-mars',    a_au: 0.0001569 },
+      '2371-io':       { period: 1.76914,  L0:   0, parent: '2371-jupiter', a_au: 0.002819 },
+      '2371-europa':   { period: 3.55118,  L0:  60, parent: '2371-jupiter', a_au: 0.004486 },
+      '2371-ganymede': { period: 7.15455,  L0: 120, parent: '2371-jupiter', a_au: 0.007155 },
+      '2371-callisto': { period: 16.6890,  L0: 200, parent: '2371-jupiter', a_au: 0.012587 },
+      '2371-titan':    { period: 15.9454,  L0:   0, parent: '2371-saturn',  a_au: 0.008168 }
     };
     var J2000_MS = Date.UTC(2000, 0, 1, 12, 0, 0);
     function daysSinceJ2000_() {
       return (FTL_EPOCH_MS + simTick * 1000 - J2000_MS) / 86400000;
+    }
+
+    // ─── SYS-014b: Sheet-driven orbital params ────────────────────
+    // Reads orbital and physical parameters from a Celestial_Bodies row,
+    // falling back to the JS lookup tables above when the migration hasn't
+    // been run yet on the spreadsheet. Once the data is fully populated
+    // these JS tables can be removed.
+    function _bodyOrbitFromRow_(b) {
+      if (!b) return null;
+      var period = Number(b.orbital_period_days);
+      var a_au   = Number(b.semi_major_axis_au);
+      if (!isFinite(period) || period <= 0) return null;
+      if (!isFinite(a_au)   || a_au   <= 0) return null;
+      var L0 = Number(b.orbital_l0_deg);
+      if (!isFinite(L0)) L0 = 0;
+      return { a_au: a_au, period: period, L0: L0 };
+    }
+    function _bodyOrbit_(b) {
+      var fromRow = _bodyOrbitFromRow_(b);
+      if (fromRow) return fromRow;
+      if (!b) return null;
+      var key = String(b.body_id || '').trim();
+      return SOL_PLANET_ORBITS[key] || null;
+    }
+    function _bodyMoonOrbit_(b) {
+      var fromRow = _bodyOrbitFromRow_(b);
+      if (fromRow) {
+        fromRow.parent = String(b.orbit_parent_id || '').trim();
+        return fromRow;
+      }
+      if (!b) return null;
+      return SOL_MOON_ORBITS[String(b.body_id || '').trim()] || null;
+    }
+    function _bodyRadiusKm_(bodyOrId) {
+      if (bodyOrId && typeof bodyOrId === 'object') {
+        var r = Number(bodyOrId.body_radius_km);
+        if (isFinite(r) && r > 0) return r;
+        return SOL_BODY_RADIUS_KM[String(bodyOrId.body_id || '').trim()] || null;
+      }
+      return SOL_BODY_RADIUS_KM[String(bodyOrId || '').trim()] || null;
     }
 
     function enterSystemView(systemId) {
@@ -1192,7 +1234,7 @@
         var R = SYS_BAND_R[bandName] || 500;
         for (var k = 0; k < arr.length; k++) {
           var b   = arr[k];
-          var orb = hasOrbits ? SOL_PLANET_ORBITS[b.body_id] : null;
+          var orb = hasOrbits ? _bodyOrbit_(b) : null;
           var ringR = orb ? (orb.a_au * SOL_AU_PX) : R;
           var ang   = orb ? 0 : ((2 * Math.PI * k) / Math.max(arr.length, 1) - Math.PI / 2);
           var ent = {
@@ -1223,8 +1265,12 @@
         siblings.sort(function(a, b) { return Number(a.orbit_order || 0) - Number(b.orbit_order || 0); });
         for (var i = 0; i < siblings.length; i++) {
           var m    = siblings[i];
-          var morb = hasOrbits ? SOL_MOON_ORBITS[m.body_id] : null;
-          var moonR = morb ? morb.a_px : SYS_MOON_R;
+          var morb = hasOrbits ? _bodyMoonOrbit_(m) : null;
+          // Heliocentric system view shows moons clumped at their parent
+          // anyway (real moon distances render sub-pixel here), so just
+          // use the stylized SYS_MOON_R when we have orbital data — the
+          // moons get hidden by isHeliocentricEntity_ regardless.
+          var moonR = SYS_MOON_R;
           var mang  = morb ? 0 : ((2 * Math.PI * i) / Math.max(siblings.length, 1));
           var ent = {
             kind: 'moon', id: m.body_id, name: m.body_name,
@@ -1239,17 +1285,18 @@
         }
       }
 
-      // 4. Jump points
+      // 4. Jump points. `scope` (data column) decides system vs orbital
+      // placement explicitly; falls back to type-based defaults when blank.
       for (var i = 0; i < data.jumpPoints.length; i++) {
         var jp = data.jumpPoints[i];
         var x, y;
         var parentRelative = null;
-        if (jp.jump_point_type === 'zenith') {
-          x = 0; y = SYS_JP_R;
-        } else if (jp.jump_point_type === 'nadir') {
-          x = 0; y = -SYS_JP_R;
-        } else if (jp.jump_point_type === 'pirate_point') {
-          var parent = byId[jp.associated_body_id];
+        var jpType  = String(jp.jump_point_type || '').trim().toLowerCase();
+        var jpScope = String(jp.scope || '').trim().toLowerCase();
+        if (!jpScope) jpScope = (jpType === 'pirate_point') ? 'planet' : 'system';
+
+        if (jpScope === 'planet') {
+          var parent = byId[String(jp.associated_body_id || '').trim()];
           if (parent) {
             var pAng    = Math.atan2(parent.y, parent.x);
             var pRadius = Math.sqrt(parent.x * parent.x + parent.y * parent.y);
@@ -1259,6 +1306,10 @@
           } else {
             x = SYS_JP_R * 0.7; y = SYS_JP_R * 0.7;
           }
+        } else if (jpType === 'zenith') {
+          x = 0; y = SYS_JP_R;
+        } else if (jpType === 'nadir') {
+          x = 0; y = -SYS_JP_R;
         } else {
           x = -SYS_JP_R; y = 0;   // generic / lagrange — left side
         }
@@ -1447,7 +1498,7 @@
       // back to a reasonable default for bodies without orbital data.
       var maxAu = 0;
       for (var i = 0; i < sats.length; i++) {
-        var orb = SOL_MOON_ORBITS[sats[i].body_id];
+        var orb = _bodyMoonOrbit_(sats[i]);
         if (orb && orb.a_au > maxAu) maxAu = orb.a_au;
       }
       // Bodies without satellites: scale to show roughly geosync/escape range.
@@ -1460,7 +1511,7 @@
       for (var i = 0; i < sats.length; i++) {
         var m   = sats[i];
         var mid = String(m.body_id || '').trim();
-        var orb = SOL_MOON_ORBITS[mid] || null;
+        var orb = _bodyMoonOrbit_(m);
         var ent = {
           kind:      'moon',
           id:        mid,
@@ -1675,10 +1726,7 @@
 
       // Central body — drawn at realistic radius (km / km-per-px) with a floor
       var centerEnt = orbitalLayout.center;
-      var radiusKm  = SOL_BODY_RADIUS_KM[centerEnt.id] ||
-        (centerEnt.raw && centerEnt.raw.body_radius_km
-          ? Number(centerEnt.raw.body_radius_km)
-          : 6000);
+      var radiusKm  = _bodyRadiusKm_(centerEnt.raw) || _bodyRadiusKm_(centerEnt.id) || 6000;
       var bodyAu       = (radiusKm > 0 ? radiusKm : 6000) / KM_PER_AU;
       var bodyWorldR   = bodyAu * orbitalLayout.scalePxPerAU;
       var bodyScreenR  = Math.max(ORBITAL_BODY_MIN_PX, bodyWorldR * view.scale);
