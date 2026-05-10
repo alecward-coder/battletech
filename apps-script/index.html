@@ -2018,14 +2018,38 @@
                           ? systemViewLayout.byId[ship.transitTargetId] : null;
         var locEnt    = heliocentricAncestor_(systemViewLayout, rawLoc);
         var targetEnt = heliocentricAncestor_(systemViewLayout, rawTarget);
-        var hasIntercept = (ship.transitState === 'TRANSITING') && _hasIntercept_(ship);
 
-        if (hasIntercept && targetEnt) {
-          var ox = Number(ship.transitOriginX);
-          var oy = Number(ship.transitOriginY);
-          var ix = Number(ship.transitInterceptX);
-          var iy = Number(ship.transitInterceptY);
-          var frac = _transitProgress_(ship);
+        // Prefer the stored intercept (frozen at transit start). For
+        // legacy transits with no stored data, fall back to a live
+        // intercept computed from the absolute transitEndTick — it's
+        // still a real intercept course, just recomputed each frame.
+        var intercept = null;
+        if (ship.transitState === 'TRANSITING') {
+          if (_hasIntercept_(ship)) {
+            intercept = {
+              originX:    Number(ship.transitOriginX),
+              originY:    Number(ship.transitOriginY),
+              interceptX: Number(ship.transitInterceptX),
+              interceptY: Number(ship.transitInterceptY),
+              startTick:  Number(ship.transitStartTick),
+              endTick:    Number(ship.transitEndTick),
+              live:       false
+            };
+          } else {
+            intercept = _liveIntercept_(ship);
+          }
+        }
+
+        if (intercept && targetEnt) {
+          var ox = intercept.originX;
+          var oy = intercept.originY;
+          var ix = intercept.interceptX;
+          var iy = intercept.interceptY;
+          var start = intercept.startTick;
+          var end   = intercept.endTick;
+          var frac  = (end > start)
+            ? Math.max(0, Math.min(1, (simTick - start) / (end - start)))
+            : 0;
           var sx = ox + (ix - ox) * frac;
           var sy = oy + (iy - oy) * frac;
 
@@ -2748,6 +2772,37 @@
         return false;
       }
       return true;
+    }
+
+    // For transits that pre-date the new save keys (or where the client
+    // couldn't compute an intercept at start), reconstruct one live from
+    // the absolute transitEndTick. The destination's predicted position
+    // at the fixed end tick is invariant under per-frame recomputation —
+    // so this still draws a stable intercept line rather than a pursuit
+    // line. Origin is the live position of ship.locationId (drifts only
+    // if the origin entity is itself orbiting, which is rare).
+    function _liveIntercept_(s) {
+      if (!s || s.transitState !== 'TRANSITING') return null;
+      if (!systemViewLayout || !systemViewLayout.byId) return null;
+      var oEnt = systemViewLayout.byId[s.locationId];
+      if (!oEnt) return null;
+      var endTick = Number(s.transitEndTick) || 0;
+      if (endTick <= 0) return null;
+      var totalH = estimateTransitHoursClient_(s.locationId, s.transitTargetId);
+      var totalT = Math.max(1, Math.round(totalH * TICKS_PER_HOUR));
+      var startTick = endTick - totalT;
+      var endDay = ((FTL_EPOCH_MS + endTick * 1000) - J2000_MS) / 86400000;
+      var pred   = _predictBodyPosition_(s.transitTargetId, endDay);
+      if (!pred) return null;
+      return {
+        originX:    oEnt.x,
+        originY:    oEnt.y,
+        interceptX: pred.x,
+        interceptY: pred.y,
+        startTick:  startTick,
+        endTick:    endTick,
+        live:       true
+      };
     }
 
     function _transitProgress_(s) {
