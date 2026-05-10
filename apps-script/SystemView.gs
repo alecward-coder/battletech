@@ -51,7 +51,13 @@ var CELESTIAL_BODIES_HEADERS = [
   'atmosphere_type', 'gravity_level', 'temperature_profile',
   'water_presence', 'terrain_profile', 'industrial_value',
   'military_value', 'political_owner', 'canonical_status',
-  'source_note', 'notes'
+  'source_note', 'notes',
+  // SYS-014b: real orbital + physical parameters
+  'body_radius_km',
+  'axial_rotation_period_hours',
+  'semi_major_axis_au',
+  'orbital_period_days',
+  'orbital_l0_deg'
 ];
 
 var ORBITAL_INFRASTRUCTURE_HEADERS = [
@@ -60,7 +66,11 @@ var ORBITAL_INFRASTRUCTURE_HEADERS = [
   'operational_status', 'security_level', 'traffic_level',
   'repair_capacity', 'dock_capacity', 'shipyard_capacity',
   'military_presence', 'hpg_capable', 'black_box_capable',
-  'canonical_status', 'source_note', 'notes'
+  'canonical_status', 'source_note', 'notes',
+  // SYS-014b: positional placement for orbital and surface views
+  'altitude_km',
+  'surface_lat',
+  'surface_lon'
 ];
 
 var JUMP_POINTS_HEADERS = [
@@ -68,7 +78,9 @@ var JUMP_POINTS_HEADERS = [
   'associated_body_id', 'location_description',
   'distance_from_primary_world', 'risk_level', 'navigation_difficulty',
   'recharge_quality', 'is_standard', 'is_pirate_point', 'is_known',
-  'canonical_status', 'source_note', 'notes'
+  'canonical_status', 'source_note', 'notes',
+  // SYS-014b: explicit scope for system-view vs orbital-view placement
+  'scope'
 ];
 
 var IN_SYSTEM_ROUTES_HEADERS = [
@@ -211,6 +223,56 @@ function updateSystemRow_(systemId, updates) {
 
 // ─── Sol seed data ───────────────────────────────────────────
 
+// ─── SYS-014b: Real Sol orbital + physical parameters ──────────
+//
+// Periods are sidereal Earth days. L0 is ecliptic mean longitude (deg)
+// at J2000.0. Semi-major axes are in AU. Body radii are equatorial km.
+// Moons use real distances in AU; their tiny values render sub-pixel
+// at default system scale, which is the point — they're correct.
+// Axial rotation periods are positive sidereal Earth hours; Venus is
+// negative because it rotates retrograde.
+
+var SOL_BODY_PARAMS_ = {
+  // body_id : { radius_km, rot_h, a_au, period_d, L0_deg }
+  '2371-sol':     { radius_km: 695700,  rot_h: 609.12 },
+  '2371-mercury': { radius_km:   2440,  rot_h: 1407.5,  a_au: 0.387,    period_d:    87.969,  L0_deg: 252.25166 },
+  '2371-venus':   { radius_km:   6052,  rot_h: -5832.5, a_au: 0.723,    period_d:   224.701,  L0_deg: 181.97970 },
+  '2371-terra':   { radius_km:   6371,  rot_h:    23.9344, a_au: 1.000, period_d:   365.256,  L0_deg: 100.46435 },
+  '2371-mars':    { radius_km:   3390,  rot_h:    24.6229, a_au: 1.524, period_d:   686.971,  L0_deg: 355.43332 },
+  '2371-jupiter': { radius_km:  69911,  rot_h:     9.9259, a_au: 5.203, period_d:  4332.589,  L0_deg:  34.40438 },
+  '2371-saturn':  { radius_km:  58232,  rot_h:    10.656,  a_au: 9.537, period_d: 10759.22,   L0_deg:  49.94432 },
+  '2371-uranus':  { radius_km:  25362,  rot_h:   -17.24,   a_au: 19.191,period_d: 30688.5,    L0_deg: 313.23218 },
+  '2371-neptune': { radius_km:  24622,  rot_h:    16.11,   a_au: 30.069,period_d: 60182,      L0_deg: 304.88003 },
+  // Moons: a_au is parent-relative, period is sidereal.
+  '2371-luna':     { radius_km: 1737, rot_h:   655.7,   a_au: 0.002570, period_d: 27.3217,  L0_deg:   0 },
+  '2371-phobos':   { radius_km:   11, rot_h:     7.6553, a_au: 0.0000627, period_d: 0.31891, L0_deg:  0 },
+  '2371-deimos':   { radius_km:    6, rot_h:    30.30,   a_au: 0.0001569, period_d: 1.26244, L0_deg: 90 },
+  '2371-io':       { radius_km: 1822, rot_h:    42.46,   a_au: 0.002819,  period_d: 1.76914, L0_deg:  0 },
+  '2371-europa':   { radius_km: 1561, rot_h:    85.23,   a_au: 0.004486,  period_d: 3.55118, L0_deg: 60 },
+  '2371-ganymede': { radius_km: 2634, rot_h:   171.71,   a_au: 0.007155,  period_d: 7.15455, L0_deg: 120 },
+  '2371-callisto': { radius_km: 2410, rot_h:   400.54,   a_au: 0.012587,  period_d: 16.6890, L0_deg: 200 },
+  '2371-titan':    { radius_km: 2575, rot_h:   382.69,   a_au: 0.008168,  period_d: 15.9454, L0_deg:  0 }
+};
+
+// Real altitudes / surface coords for Sol orbital infrastructure.
+// surface_*  for surface installations (lat, lon in decimal degrees).
+// altitude_km for orbital installations (above the parent body's surface).
+var SOL_INFRASTRUCTURE_PARAMS_ = {
+  '2371-fac-comstar-hq':       { surface_lat:  32.20, surface_lon: -80.75 },     // Hilton Head, Terra
+  '2371-fac-terra-hpg':        { surface_lat:  32.20, surface_lon: -80.75 },     // colocated with HQ in canon
+  '2371-fac-titan-shipyards':  { altitude_km: 1500 },                            // Titan orbit
+  '2371-fac-luna-base':        { surface_lat:   0.67, surface_lon:  23.47 },     // generic equatorial Luna site
+  '2371-fac-zenith-recharge':  { altitude_km:  0 }                               // colocated with zenith JP, scope-deep_space
+};
+
+// Default scope for jump-point types. zenith/nadir/lagrange are system-
+// scope; pirate points hang off a planet so they're orbital scope.
+function _defaultJpScope_(jpType) {
+  var t = String(jpType || '').trim().toLowerCase();
+  if (t === 'pirate_point') return 'planet';
+  return 'system';
+}
+
 function seedSolSystem_() {
   // Update Systems row for Sol with the new in-system metadata.
   updateSystemRow_(SOL_SYSTEM_ID, {
@@ -231,12 +293,120 @@ function seedSolSystem_() {
       'control. Titan shipyards contested. Terra HPG operational.'
   });
 
-  appendRowsIfMissing_('Celestial_Bodies', CELESTIAL_BODIES_HEADERS, SOL_BODIES_);
-  appendRowsIfMissing_('Orbital_Infrastructure', ORBITAL_INFRASTRUCTURE_HEADERS, SOL_INFRASTRUCTURE_);
-  appendRowsIfMissing_('Jump_Points', JUMP_POINTS_HEADERS, SOL_JUMP_POINTS_);
+  // Augment seed rows with the new orbital / physical / placement fields
+  // so freshly-appended rows already carry that data.
+  var bodies = SOL_BODIES_.map(function(b) {
+    var p = SOL_BODY_PARAMS_[b.body_id];
+    if (!p) return b;
+    var out = {};
+    for (var k in b) out[k] = b[k];
+    if (p.radius_km !== undefined) out.body_radius_km = p.radius_km;
+    if (p.rot_h     !== undefined) out.axial_rotation_period_hours = p.rot_h;
+    if (p.a_au      !== undefined) out.semi_major_axis_au = p.a_au;
+    if (p.period_d  !== undefined) out.orbital_period_days = p.period_d;
+    if (p.L0_deg    !== undefined) out.orbital_l0_deg = p.L0_deg;
+    return out;
+  });
+  var infra = SOL_INFRASTRUCTURE_.map(function(f) {
+    var p = SOL_INFRASTRUCTURE_PARAMS_[f.facility_id];
+    if (!p) return f;
+    var out = {};
+    for (var k in f) out[k] = f[k];
+    if (p.altitude_km  !== undefined) out.altitude_km  = p.altitude_km;
+    if (p.surface_lat  !== undefined) out.surface_lat  = p.surface_lat;
+    if (p.surface_lon  !== undefined) out.surface_lon  = p.surface_lon;
+    return out;
+  });
+  var jps = SOL_JUMP_POINTS_.map(function(jp) {
+    var out = {};
+    for (var k in jp) out[k] = jp[k];
+    if (out.scope === undefined || out.scope === '') {
+      out.scope = _defaultJpScope_(jp.jump_point_type);
+    }
+    return out;
+  });
+
+  appendRowsIfMissing_('Celestial_Bodies', CELESTIAL_BODIES_HEADERS, bodies);
+  appendRowsIfMissing_('Orbital_Infrastructure', ORBITAL_INFRASTRUCTURE_HEADERS, infra);
+  appendRowsIfMissing_('Jump_Points', JUMP_POINTS_HEADERS, jps);
   appendRowsIfMissing_('In_System_Routes', IN_SYSTEM_ROUTES_HEADERS, SOL_ROUTES_);
   appendRowsIfMissing_('Local_Comm_Networks', LOCAL_COMM_NETWORKS_HEADERS, SOL_COMMS_);
   appendRowsIfMissing_('System_Data_Sources', SYSTEM_DATA_SOURCES_HEADERS, SOL_SOURCES_);
+
+  // Backfill the new SYS-014b columns on rows that already exist in the
+  // sheets (appendRowsIfMissing_ skips them, so they'd otherwise stay
+  // empty for the new headers).
+  backfillSolOrbitalData_();
+}
+
+// Walks Celestial_Bodies, Orbital_Infrastructure, and Jump_Points and
+// fills in the SYS-014b parameter columns for any row whose primary id
+// matches a Sol seed entry — but only when the cell is currently empty,
+// so manual edits aren't clobbered.
+function backfillSolOrbitalData_() {
+  _backfillByIdInSheet_('Celestial_Bodies', 'body_id', SOL_BODY_PARAMS_, {
+    body_radius_km:               'radius_km',
+    axial_rotation_period_hours:  'rot_h',
+    semi_major_axis_au:           'a_au',
+    orbital_period_days:          'period_d',
+    orbital_l0_deg:               'L0_deg'
+  });
+  _backfillByIdInSheet_('Orbital_Infrastructure', 'facility_id', SOL_INFRASTRUCTURE_PARAMS_, {
+    altitude_km: 'altitude_km',
+    surface_lat: 'surface_lat',
+    surface_lon: 'surface_lon'
+  });
+  _backfillJpScope_();
+}
+
+function _backfillByIdInSheet_(sheetName, idCol, lookup, fieldMap) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet) return;
+  var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return;
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var idIdx   = headers.indexOf(idCol);
+  if (idIdx === -1) return;
+  var data    = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  var dirty   = false;
+  for (var r = 0; r < data.length; r++) {
+    var key = String(data[r][idIdx] || '').trim();
+    if (!key) continue;
+    var params = lookup[key];
+    if (!params) continue;
+    for (var col in fieldMap) {
+      var src = fieldMap[col];
+      if (params[src] === undefined) continue;
+      var ci = headers.indexOf(col);
+      if (ci === -1) continue;
+      var existing = data[r][ci];
+      if (existing === '' || existing === null || existing === undefined) {
+        data[r][ci] = params[src];
+        dirty = true;
+      }
+    }
+  }
+  if (dirty) sheet.getRange(2, 1, data.length, lastCol).setValues(data);
+}
+
+function _backfillJpScope_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Jump_Points');
+  if (!sheet) return;
+  var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return;
+  var headers   = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var typeIdx   = headers.indexOf('jump_point_type');
+  var scopeIdx  = headers.indexOf('scope');
+  if (typeIdx === -1 || scopeIdx === -1) return;
+  var data  = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  var dirty = false;
+  for (var r = 0; r < data.length; r++) {
+    var existing = data[r][scopeIdx];
+    if (existing !== '' && existing !== null && existing !== undefined) continue;
+    data[r][scopeIdx] = _defaultJpScope_(data[r][typeIdx]);
+    dirty = true;
+  }
+  if (dirty) sheet.getRange(2, 1, data.length, lastCol).setValues(data);
 }
 
 // Convention for IDs in Sol:
